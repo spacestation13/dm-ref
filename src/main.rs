@@ -111,22 +111,30 @@ fn main() {
 
     let Ok(raw) = fs::read_to_string(&args.input) else {
         eprintln!("Failed to read input file: {:?}", args.input);
-        return;
+        std::process::exit(1);
     };
 
+    eprintln!("Read {} bytes from {:?}", raw.len(), args.input);
+
     let parts: Vec<&str> = raw.split("<hr>").collect();
+    eprintln!("Split into {} parts", parts.len());
 
     let mut path_to_doc: HashMap<String, Html> = HashMap::new();
     let mut page_is_section: HashSet<String> = HashSet::new();
+
+    let mut skipped_no_anchor = 0;
+    let mut skipped_no_name = 0;
 
     for page in parts.iter() {
         let document = Html::parse_document(page);
 
         let Some(page_element) = document.select(&PAGE_SELECTOR).next() else {
+            skipped_no_anchor += 1;
             continue;
         };
 
         let Some(page_path) = page_element.attr("name") else {
+            skipped_no_name += 1;
             continue;
         };
 
@@ -136,6 +144,13 @@ fn main() {
 
         path_to_doc.insert(page_path.to_string(), document);
     }
+
+    eprintln!(
+        "Parsed {} documents (skipped: {} no anchor, {} no name attr)",
+        path_to_doc.len(),
+        skipped_no_anchor,
+        skipped_no_name
+    );
 
     let mut path_to_page: HashMap<String, Page> = HashMap::new();
     let mut page_is_object: HashSet<String> = HashSet::new();
@@ -165,6 +180,11 @@ This site is made using [Quartz](https://quartz.jzhao.xyz/) and [dm-ref-scraper]
         },
     );
 
+    eprintln!("Writing {} pages to {:?}", path_to_page.len(), args.output);
+
+    let mut written = 0;
+    let mut failed = 0;
+
     for (path, page) in &path_to_page {
         let mut path_str = make_ref_web_safe(path);
 
@@ -178,6 +198,8 @@ This site is made using [Quartz](https://quartz.jzhao.xyz/) and [dm-ref-scraper]
         create_dir_all(prefix).unwrap();
 
         let Ok(mut file) = File::create(format!("{}.md", clean_path)) else {
+            eprintln!("Failed to create file: {}.md", clean_path);
+            failed += 1;
             continue;
         };
 
@@ -188,8 +210,15 @@ This site is made using [Quartz](https://quartz.jzhao.xyz/) and [dm-ref-scraper]
         let frontmatter = page.to_frontmatter(page_is_object.contains(&page.title));
         let front_matter_and_body = format!("+++\n{}+++\n{}", frontmatter, body);
 
-        let _ = file.write_all(front_matter_and_body.as_bytes());
+        if let Err(e) = file.write_all(front_matter_and_body.as_bytes()) {
+            eprintln!("Failed to write {}.md: {}", clean_path, e);
+            failed += 1;
+        } else {
+            written += 1;
+        }
     }
+
+    eprintln!("Done: {} written, {} failed", written, failed);
 }
 
 fn create_page_from_html(
