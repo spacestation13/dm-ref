@@ -16,7 +16,7 @@ const config: QuartzConfig = {
     enablePopovers: true,
     analytics: null,
     locale: "en-US",
-    baseUrl: "ref.harry.live",
+    baseUrl: "ref.dm-lang.org",
     builtFor: "%BYOND VERSION%",
     ignorePatterns: ["private", "templates", ".obsidian"],
     defaultDateType: "modified",
