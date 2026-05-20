@@ -204,6 +204,7 @@ This site is made using [Quartz](https://quartz.jzhao.xyz/) and [dm-ref-scraper]
 
         let body = remove_html_encode(&page.body);
         let body = ORPHAN_TT_REGEX.replace_all(&body, "").to_string();
+        let body = escape_percents(&body);
         let body = escape_dollars_outside_code(&body);
 
         let frontmatter = page.to_frontmatter(page_is_object.contains(&page.title));
@@ -488,11 +489,15 @@ fn create_page_from_html(
                         }
                     }
                     "pre" => {
-                        let has_child_elements = element.children().any(|c| c.value().is_element());
+                        let has_child_elements =
+                            element.children().any(|c| c.value().is_element());
                         if has_child_elements {
-                            text.push(element.html());
+                            text.push(render_pre_with_links(&element, path_to_doc));
                         } else {
-                            text.push(format!("```\n{}\n```", element.inner_html().trim()));
+                            text.push(format!(
+                                "```\n{}\n```",
+                                element.inner_html().trim()
+                            ));
                         }
                     }
                     "ul" => text.push(parse_html_to_markdown(element.html(), path_to_doc)),
@@ -537,6 +542,54 @@ fn create_page_from_html(
             metadata: parsed_metadata,
         },
     );
+}
+
+fn render_pre_with_links(
+    pre: &scraper::ElementRef,
+    all_pages: &HashMap<String, Html>,
+) -> String {
+    let mut result = String::new();
+
+    for child in pre.children() {
+        match child.value() {
+            scraper::Node::Text(t) => {
+                let escaped = t.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+                result.push_str(&escaped);
+            }
+            scraper::Node::Element(elem) => {
+                let el = scraper::ElementRef::wrap(child).unwrap();
+                let name = elem.name.local.as_ref();
+
+                if name == "a" {
+                    if let Some(dest) = elem.attr("href") {
+                        let final_destination = dest.replace('#', "");
+                        let link_text = el.inner_html();
+                        if all_pages.contains_key(&final_destination)
+                            || final_destination.contains("http")
+                        {
+                            let _ = write!(
+                                result,
+                                "<a href=\"{}\">{}</a>",
+                                make_ref_web_safe(&final_destination),
+                                link_text
+                            );
+                        } else {
+                            result.push_str(&link_text);
+                        }
+                    } else {
+                        result.push_str(&remove_html_encode(
+                            &el.text().collect::<String>(),
+                        ));
+                    }
+                } else {
+                    result.push_str(&el.html());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    format!("<pre>{}</pre>", result.trim())
 }
 
 fn render_dd_content(
@@ -651,6 +704,37 @@ fn clean_code_backslashes(input: &str) -> String {
     }
 
     cleaning
+}
+
+fn escape_percents(input: &str) -> String {
+    let mut result = String::with_capacity(input.len());
+    let mut remaining = input;
+    let mut in_html = false;
+
+    while !remaining.is_empty() {
+        if remaining.starts_with('<') {
+            in_html = true;
+            result.push('<');
+            remaining = &remaining[1..];
+        } else if in_html && remaining.starts_with('>') {
+            in_html = false;
+            result.push('>');
+            remaining = &remaining[1..];
+        } else if remaining.starts_with("%%") {
+            if in_html {
+                result.push_str("%%");
+            } else {
+                result.push_str("&#37;&#37;");
+            }
+            remaining = &remaining[2..];
+        } else {
+            let c = remaining.chars().next().unwrap();
+            result.push(c);
+            remaining = &remaining[c.len_utf8()..];
+        }
+    }
+
+    result
 }
 
 fn escape_dollars_outside_code(input: &str) -> String {
