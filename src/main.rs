@@ -14,8 +14,7 @@ use toml_edit::{value, Array, Table};
 
 static PAGE_SELECTOR: LazyLock<Selector> = LazyLock::new(|| Selector::parse("a").unwrap());
 static TITLE_SELECTOR: LazyLock<Selector> = LazyLock::new(|| Selector::parse("h2").unwrap());
-static CONTENT_SELECTOR: LazyLock<Selector> =
-    LazyLock::new(|| Selector::parse("p,h3,xmp,pre,ul,dl").unwrap());
+static BODY_SELECTOR: LazyLock<Selector> = LazyLock::new(|| Selector::parse("body").unwrap());
 static DL_SELECTOR: LazyLock<Selector> = LazyLock::new(|| Selector::parse("dl").unwrap());
 static B_SELECTOR: LazyLock<Selector> = LazyLock::new(|| Selector::parse("b").unwrap());
 static DT_SELECTOR: LazyLock<Selector> = LazyLock::new(|| Selector::parse("dt").unwrap());
@@ -333,151 +332,202 @@ fn create_page_from_html(
         }
     }
 
-    // Second pass: all content elements in document order
-    for element in document.select(&CONTENT_SELECTOR) {
-        // Skip elements nested inside a <dl> (they're handled when we process that <dl>)
-        if is_nested_in_dl(&element) {
-            continue;
-        }
+    // Second pass: iterate body children in document order
+    let body = document.select(&BODY_SELECTOR).next().unwrap();
+    let block_elements = [
+        "dl", "p", "h3", "xmp", "pre", "ul", "table", "div", "hr", "ol",
+    ];
+    let skip_elements = ["h2"];
+    let mut inline_accumulator = String::new();
 
-        match element.value().name() {
-            "dl" => {
-                if bold_dl_ids.contains(&element.id()) {
+    let flush_inline =
+        |acc: &mut String, text: &mut Vec<String>, all_pages: &HashMap<String, Html>| {
+            if !acc.trim().is_empty() {
+                let md = parse_html_to_markdown(acc.clone(), all_pages);
+                if !md.trim().is_empty() {
+                    text.push(md.trim().to_string());
+                }
+            }
+            acc.clear();
+        };
+
+    for child in body.children() {
+        match child.value() {
+            scraper::Node::Text(t) => {
+                inline_accumulator.push_str(t);
+                continue;
+            }
+            scraper::Node::Element(elem) => {
+                let name = elem.name.local.as_ref();
+                let element = scraper::ElementRef::wrap(child).unwrap();
+
+                if skip_elements.contains(&name) {
                     continue;
                 }
 
-                if element
-                    .value()
-                    .has_class("codedt", scraper::CaseSensitivity::CaseSensitive)
-                {
-                    let mut definition_list = String::new();
-                    let dt_elements: Vec<_> = element.select(&DT_SELECTOR).collect();
-                    let dd_elements: Vec<_> = element.select(&DD_SELECTOR).collect();
-
-                    for (dt, dd) in dt_elements.iter().zip(dd_elements.iter()) {
-                        let term = parse_html_to_markdown(dt.inner_html(), path_to_doc);
-                        let description = parse_html_to_markdown(dd.inner_html(), path_to_doc);
-                        let _ = writeln!(
-                            definition_list,
-                            "- **{}**: {}",
-                            term.trim(),
-                            description.trim()
-                        );
-                    }
-
-                    if !definition_list.is_empty() {
-                        text.push(definition_list.trim().to_string());
-                    }
-                } else {
-                    let dt_elements: Vec<_> = element.select(&DT_SELECTOR).collect();
-                    let dd_elements: Vec<_> = element.select(&DD_SELECTOR).collect();
-
-                    let mut definition_list = String::new();
-                    for (dt, dd) in dt_elements.iter().zip(dd_elements.iter()) {
-                        let term = parse_html_to_markdown(
-                            dt.inner_html().replace(':', ""),
-                            path_to_doc,
-                        )
-                        .trim()
-                        .to_string();
-                        let description = parse_html_to_markdown(
-                            NAIVE_STRIPPER_REGEX
-                                .replace_all(&dd.inner_html(), "")
-                                .to_string(),
-                            path_to_doc,
-                        );
-
-                        if term.contains("When") {
-                            tags.push("event".to_string());
-                        }
-
-                        if !description.is_empty() {
-                            let _ = writeln!(
-                                definition_list,
-                                "- **{}**: {}",
-                                term,
-                                description.trim()
-                            );
-                        }
-                    }
-
-                    if !definition_list.is_empty() {
-                        text.push(definition_list.trim().to_string());
-                    }
-                }
-            }
-            "p" => {
-                if element
-                    .value()
-                    .has_class("note", scraper::CaseSensitivity::CaseSensitive)
-                    || element.inner_html().starts_with("Note:")
-                {
-                    let mut note_type = "note";
-
-                    if element
-                        .value()
-                        .has_class("deprecated", scraper::CaseSensitivity::CaseSensitive)
-                    {
-                        note_type = "deprecated";
-                    };
-
-                    if element
-                        .value()
-                        .has_class("security", scraper::CaseSensitivity::CaseSensitive)
-                    {
-                        note_type = "danger";
-                    };
-
-                    text.push(format!(
-                        "> [!{}]\n> {}",
-                        note_type,
-                        parse_html_to_markdown(
-                            element.inner_html().replace("Note:", ""),
-                            path_to_doc
-                        )
-                    ));
-                } else {
-                    text.push(parse_html_to_markdown(element.inner_html(), path_to_doc));
-                }
-            }
-            "h3" => {
-                if element.inner_html() == "Example:" {
+                if name == "a" && elem.attr("href").is_none() {
                     continue;
                 }
 
-                text.push(format!(
-                    "## {}",
-                    parse_html_to_markdown(element.inner_html(), path_to_doc)
-                ));
-            }
-            "xmp" => {
-                if let Some(ref target) = target_name {
-                    text.push(format!(
-                        "```dream-maker /{}/\n{}\n```",
-                        target,
-                        element.inner_html().trim()
-                    ));
-                } else {
-                    text.push(format!(
-                        "```dream-maker\n{}\n```",
-                        element.inner_html().trim()
-                    ));
+                if !block_elements.contains(&name) {
+                    inline_accumulator.push_str(&element.html());
+                    continue;
+                }
+
+                flush_inline(&mut inline_accumulator, &mut text, path_to_doc);
+
+                match name {
+                    "dl" => {
+                        if bold_dl_ids.contains(&child.id()) {
+                            continue;
+                        }
+
+                        if elem.has_class(
+                            "codedt",
+                            scraper::CaseSensitivity::CaseSensitive,
+                        ) {
+                            let mut definition_list = String::new();
+                            let dt_elements: Vec<_> =
+                                element.select(&DT_SELECTOR).collect();
+                            let dd_elements: Vec<_> =
+                                element.select(&DD_SELECTOR).collect();
+
+                            for (dt, dd) in dt_elements.iter().zip(dd_elements.iter()) {
+                                let term =
+                                    parse_html_to_markdown(dt.inner_html(), path_to_doc);
+                                let description =
+                                    parse_html_to_markdown(dd.inner_html(), path_to_doc);
+                                let _ = writeln!(
+                                    definition_list,
+                                    "- **{}**: {}",
+                                    term.trim(),
+                                    description.trim()
+                                );
+                            }
+
+                            if !definition_list.is_empty() {
+                                text.push(definition_list.trim().to_string());
+                            }
+                        } else {
+                            let dt_elements: Vec<_> =
+                                element.select(&DT_SELECTOR).collect();
+                            let dd_elements: Vec<_> =
+                                element.select(&DD_SELECTOR).collect();
+
+                            for (dt, dd) in dt_elements.iter().zip(dd_elements.iter()) {
+                                let term = parse_html_to_markdown(
+                                    dt.inner_html().replace(':', ""),
+                                    path_to_doc,
+                                )
+                                .trim()
+                                .to_string();
+
+                                if term.contains("When") {
+                                    tags.push("event".to_string());
+                                }
+
+                                let body =
+                                    render_dd_content(dd, &target_name, path_to_doc);
+                                if !body.is_empty() {
+                                    let quoted = body
+                                        .lines()
+                                        .map(|line| {
+                                            if line.is_empty() {
+                                                ">>>".to_string()
+                                            } else {
+                                                format!(">>> {}", line)
+                                            }
+                                        })
+                                        .collect::<Vec<_>>()
+                                        .join("\n");
+                                    text.push(format!("**{}**\n\n{}", term, quoted));
+                                }
+                            }
+                        }
+                    }
+                    "p" => {
+                        if elem
+                            .has_class("note", scraper::CaseSensitivity::CaseSensitive)
+                            || element.inner_html().starts_with("Note:")
+                        {
+                            let mut note_type = "note";
+
+                            if elem.has_class(
+                                "deprecated",
+                                scraper::CaseSensitivity::CaseSensitive,
+                            ) {
+                                note_type = "deprecated";
+                            };
+
+                            if elem.has_class(
+                                "security",
+                                scraper::CaseSensitivity::CaseSensitive,
+                            ) {
+                                note_type = "danger";
+                            };
+
+                            text.push(format!(
+                                "> [!{}]\n> {}",
+                                note_type,
+                                parse_html_to_markdown(
+                                    element.inner_html().replace("Note:", ""),
+                                    path_to_doc
+                                )
+                            ));
+                        } else {
+                            text.push(parse_html_to_markdown(
+                                element.inner_html(),
+                                path_to_doc,
+                            ));
+                        }
+                    }
+                    "h3" => {
+                        if element.inner_html() == "Example:" {
+                            continue;
+                        }
+
+                        text.push(format!(
+                            "## {}",
+                            parse_html_to_markdown(element.inner_html(), path_to_doc)
+                        ));
+                    }
+                    "xmp" => {
+                        if let Some(ref target) = target_name {
+                            text.push(format!(
+                                "```dream-maker /{}/\n{}\n```",
+                                target,
+                                element.inner_html().trim()
+                            ));
+                        } else {
+                            text.push(format!(
+                                "```dream-maker\n{}\n```",
+                                element.inner_html().trim()
+                            ));
+                        }
+                    }
+                    "pre" => {
+                        let has_child_elements =
+                            element.children().any(|c| c.value().is_element());
+                        if has_child_elements {
+                            text.push(element.html());
+                        } else {
+                            text.push(format!(
+                                "```\n{}\n```",
+                                element.inner_html().trim()
+                            ));
+                        }
+                    }
+                    "ul" => {
+                        text.push(parse_html_to_markdown(element.html(), path_to_doc))
+                    }
+                    _ => (),
                 }
             }
-            "pre" => {
-                let has_child_elements =
-                    element.children().any(|child| child.value().is_element());
-                if has_child_elements {
-                    text.push(element.html());
-                } else {
-                    text.push(format!("```\n{}\n```", element.inner_html().trim()));
-                }
-            }
-            "ul" => text.push(parse_html_to_markdown(element.html(), path_to_doc)),
             _ => (),
         }
     }
 
+    flush_inline(&mut inline_accumulator, &mut text, path_to_doc);
     text.extend(write_after);
 
     let version = title_element
@@ -513,18 +563,66 @@ fn create_page_from_html(
     );
 }
 
-fn is_nested_in_dl(element: &scraper::ElementRef) -> bool {
-    let mut node = element.parent();
-    while let Some(parent) = node {
-        if let Some(elem) = parent.value().as_element() {
-            let name = elem.name.local.as_ref();
-            if name == "dl" || name == "dd" || name == "dt" {
-                return true;
+fn render_dd_content(
+    dd: &scraper::ElementRef,
+    target_name: &Option<String>,
+    all_pages: &HashMap<String, Html>,
+) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    let mut html_accumulator = String::new();
+
+    let flush_html = |acc: &mut String, parts: &mut Vec<String>, all_pages: &HashMap<String, Html>| {
+        if !acc.trim().is_empty() {
+            let stripped = NAIVE_STRIPPER_REGEX.replace_all(acc, "").to_string();
+            let md = parse_html_to_markdown(stripped, all_pages);
+            if !md.trim().is_empty() {
+                parts.push(md.trim().to_string());
             }
         }
-        node = parent.parent();
+        acc.clear();
+    };
+
+    for child in dd.children() {
+        match child.value() {
+            scraper::Node::Text(t) => {
+                html_accumulator.push_str(t);
+            }
+            scraper::Node::Element(elem) => {
+                let name = elem.name.local.as_ref();
+                if name == "xmp" {
+                    flush_html(&mut html_accumulator, &mut parts, all_pages);
+                    let el = scraper::ElementRef::wrap(child).unwrap();
+                    let code = el.inner_html();
+                    if let Some(ref target) = target_name {
+                        parts.push(format!(
+                            "```dream-maker /{}/\n{}\n```",
+                            target,
+                            code.trim()
+                        ));
+                    } else {
+                        parts.push(format!("```dream-maker\n{}\n```", code.trim()));
+                    }
+                } else if name == "p" {
+                    flush_html(&mut html_accumulator, &mut parts, all_pages);
+                    let el = scraper::ElementRef::wrap(child).unwrap();
+                    let stripped = NAIVE_STRIPPER_REGEX
+                        .replace_all(&el.inner_html(), "")
+                        .to_string();
+                    let md = parse_html_to_markdown(stripped, all_pages);
+                    if !md.trim().is_empty() {
+                        parts.push(md.trim().to_string());
+                    }
+                } else {
+                    let el = scraper::ElementRef::wrap(child).unwrap();
+                    html_accumulator.push_str(&el.html());
+                }
+            }
+            _ => {}
+        }
     }
-    false
+
+    flush_html(&mut html_accumulator, &mut parts, all_pages);
+    parts.join("\n\n")
 }
 
 fn parse_html_to_markdown(html: String, all_pages: &HashMap<String, Html>) -> String {
