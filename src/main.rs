@@ -382,19 +382,13 @@ fn create_page_from_html(
                             continue;
                         }
 
-                        if elem.has_class(
-                            "codedt",
-                            scraper::CaseSensitivity::CaseSensitive,
-                        ) {
+                        if elem.has_class("codedt", scraper::CaseSensitivity::CaseSensitive) {
                             let mut definition_list = String::new();
-                            let dt_elements: Vec<_> =
-                                element.select(&DT_SELECTOR).collect();
-                            let dd_elements: Vec<_> =
-                                element.select(&DD_SELECTOR).collect();
+                            let dt_elements: Vec<_> = element.select(&DT_SELECTOR).collect();
+                            let dd_elements: Vec<_> = element.select(&DD_SELECTOR).collect();
 
                             for (dt, dd) in dt_elements.iter().zip(dd_elements.iter()) {
-                                let term =
-                                    parse_html_to_markdown(dt.inner_html(), path_to_doc);
+                                let term = parse_html_to_markdown(dt.inner_html(), path_to_doc);
                                 let description =
                                     parse_html_to_markdown(dd.inner_html(), path_to_doc);
                                 let _ = writeln!(
@@ -409,10 +403,8 @@ fn create_page_from_html(
                                 text.push(definition_list.trim().to_string());
                             }
                         } else {
-                            let dt_elements: Vec<_> =
-                                element.select(&DT_SELECTOR).collect();
-                            let dd_elements: Vec<_> =
-                                element.select(&DD_SELECTOR).collect();
+                            let dt_elements: Vec<_> = element.select(&DT_SELECTOR).collect();
+                            let dd_elements: Vec<_> = element.select(&DD_SELECTOR).collect();
 
                             for (dt, dd) in dt_elements.iter().zip(dd_elements.iter()) {
                                 let term = parse_html_to_markdown(
@@ -426,16 +418,15 @@ fn create_page_from_html(
                                     tags.push("event".to_string());
                                 }
 
-                                let body =
-                                    render_dd_content(dd, &target_name, path_to_doc);
+                                let body = render_dd_content(dd, &target_name, path_to_doc);
                                 if !body.is_empty() {
                                     let quoted = body
                                         .lines()
                                         .map(|line| {
                                             if line.is_empty() {
-                                                ">>>".to_string()
+                                                ">".to_string()
                                             } else {
-                                                format!(">>> {}", line)
+                                                format!("> {}", line)
                                             }
                                         })
                                         .collect::<Vec<_>>()
@@ -446,23 +437,17 @@ fn create_page_from_html(
                         }
                     }
                     "p" => {
-                        if elem
-                            .has_class("note", scraper::CaseSensitivity::CaseSensitive)
+                        if elem.has_class("note", scraper::CaseSensitivity::CaseSensitive)
                             || element.inner_html().starts_with("Note:")
                         {
                             let mut note_type = "note";
 
-                            if elem.has_class(
-                                "deprecated",
-                                scraper::CaseSensitivity::CaseSensitive,
-                            ) {
+                            if elem.has_class("deprecated", scraper::CaseSensitivity::CaseSensitive)
+                            {
                                 note_type = "deprecated";
                             };
 
-                            if elem.has_class(
-                                "security",
-                                scraper::CaseSensitivity::CaseSensitive,
-                            ) {
+                            if elem.has_class("security", scraper::CaseSensitivity::CaseSensitive) {
                                 note_type = "danger";
                             };
 
@@ -475,10 +460,7 @@ fn create_page_from_html(
                                 )
                             ));
                         } else {
-                            text.push(parse_html_to_markdown(
-                                element.inner_html(),
-                                path_to_doc,
-                            ));
+                            text.push(parse_html_to_markdown(element.inner_html(), path_to_doc));
                         }
                     }
                     "h3" => {
@@ -506,20 +488,14 @@ fn create_page_from_html(
                         }
                     }
                     "pre" => {
-                        let has_child_elements =
-                            element.children().any(|c| c.value().is_element());
+                        let has_child_elements = element.children().any(|c| c.value().is_element());
                         if has_child_elements {
                             text.push(element.html());
                         } else {
-                            text.push(format!(
-                                "```\n{}\n```",
-                                element.inner_html().trim()
-                            ));
+                            text.push(format!("```\n{}\n```", element.inner_html().trim()));
                         }
                     }
-                    "ul" => {
-                        text.push(parse_html_to_markdown(element.html(), path_to_doc))
-                    }
+                    "ul" => text.push(parse_html_to_markdown(element.html(), path_to_doc)),
                     _ => (),
                 }
             }
@@ -571,16 +547,17 @@ fn render_dd_content(
     let mut parts: Vec<String> = Vec::new();
     let mut html_accumulator = String::new();
 
-    let flush_html = |acc: &mut String, parts: &mut Vec<String>, all_pages: &HashMap<String, Html>| {
-        if !acc.trim().is_empty() {
-            let stripped = NAIVE_STRIPPER_REGEX.replace_all(acc, "").to_string();
-            let md = parse_html_to_markdown(stripped, all_pages);
-            if !md.trim().is_empty() {
-                parts.push(md.trim().to_string());
+    let flush_html =
+        |acc: &mut String, parts: &mut Vec<String>, all_pages: &HashMap<String, Html>| {
+            if !acc.trim().is_empty() {
+                let stripped = NAIVE_STRIPPER_REGEX.replace_all(acc, "").to_string();
+                let md = parse_html_to_markdown(stripped, all_pages);
+                if !md.trim().is_empty() {
+                    parts.push(md.trim().to_string());
+                }
             }
-        }
-        acc.clear();
-    };
+            acc.clear();
+        };
 
     for child in dd.children() {
         match child.value() {
@@ -594,11 +571,7 @@ fn render_dd_content(
                     let el = scraper::ElementRef::wrap(child).unwrap();
                     let code = el.inner_html();
                     if let Some(ref target) = target_name {
-                        parts.push(format!(
-                            "```dream-maker /{}/\n{}\n```",
-                            target,
-                            code.trim()
-                        ));
+                        parts.push(format!("```dream-maker /{}/\n{}\n```", target, code.trim()));
                     } else {
                         parts.push(format!("```dream-maker\n{}\n```", code.trim()));
                     }
