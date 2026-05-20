@@ -170,7 +170,7 @@ fn main() {
             title: "Reference".to_string(),
             body: "# dm-ref-scraper and Quartz
 
-This site is made using [Quartz](https://quartz.jzhao.xyz/) and [dm-ref-scraper](https://github.com/hry-gh/dm-ref-scraper). You probably want to start [here](/DM)!
+This site is made using [Quartz](https://quartz.jzhao.xyz/) and [dm-ref-scraper](https://github.com/spacestation13/dm-ref-scraper). You probably want to start [here](/DM)!
     "
             .to_string(),
             version: None,
@@ -334,6 +334,7 @@ fn create_page_from_html(
     }
 
     // Second pass: iterate body children in document order
+    // Flatten name-only <a> anchors so their children are processed inline
     let body = document.select(&BODY_SELECTOR).next().unwrap();
     let block_elements = [
         "dl", "p", "h3", "xmp", "pre", "ul", "table", "div", "hr", "ol",
@@ -352,7 +353,19 @@ fn create_page_from_html(
             acc.clear();
         };
 
+    let mut content_nodes: Vec<ego_tree::NodeRef<scraper::Node>> = Vec::new();
     for child in body.children() {
+        if let scraper::Node::Element(elem) = child.value() {
+            let name = elem.name.local.as_ref();
+            if name == "a" && elem.attr("href").is_none() {
+                content_nodes.extend(child.children());
+                continue;
+            }
+        }
+        content_nodes.push(child);
+    }
+
+    for child in &content_nodes {
         match child.value() {
             scraper::Node::Text(t) => {
                 inline_accumulator.push_str(t);
@@ -360,13 +373,9 @@ fn create_page_from_html(
             }
             scraper::Node::Element(elem) => {
                 let name = elem.name.local.as_ref();
-                let element = scraper::ElementRef::wrap(child).unwrap();
+                let element = scraper::ElementRef::wrap(*child).unwrap();
 
                 if skip_elements.contains(&name) {
-                    continue;
-                }
-
-                if name == "a" && elem.attr("href").is_none() {
                     continue;
                 }
 
@@ -489,18 +498,15 @@ fn create_page_from_html(
                         }
                     }
                     "pre" => {
-                        let has_child_elements =
-                            element.children().any(|c| c.value().is_element());
+                        let has_child_elements = element.children().any(|c| c.value().is_element());
                         if has_child_elements {
                             text.push(render_pre_with_links(&element, path_to_doc));
                         } else {
-                            text.push(format!(
-                                "```\n{}\n```",
-                                element.inner_html().trim()
-                            ));
+                            text.push(format!("```\n{}\n```", element.inner_html().trim()));
                         }
                     }
                     "ul" => text.push(parse_html_to_markdown(element.html(), path_to_doc)),
+                    "div" | "table" | "ol" => text.push(element.html()),
                     _ => (),
                 }
             }
@@ -544,16 +550,16 @@ fn create_page_from_html(
     );
 }
 
-fn render_pre_with_links(
-    pre: &scraper::ElementRef,
-    all_pages: &HashMap<String, Html>,
-) -> String {
+fn render_pre_with_links(pre: &scraper::ElementRef, all_pages: &HashMap<String, Html>) -> String {
     let mut result = String::new();
 
     for child in pre.children() {
         match child.value() {
             scraper::Node::Text(t) => {
-                let escaped = t.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+                let escaped = t
+                    .replace('&', "&amp;")
+                    .replace('<', "&lt;")
+                    .replace('>', "&gt;");
                 result.push_str(&escaped);
             }
             scraper::Node::Element(elem) => {
@@ -577,9 +583,7 @@ fn render_pre_with_links(
                             result.push_str(&link_text);
                         }
                     } else {
-                        result.push_str(&remove_html_encode(
-                            &el.text().collect::<String>(),
-                        ));
+                        result.push_str(&remove_html_encode(&el.text().collect::<String>()));
                     }
                 } else {
                     result.push_str(&el.html());
