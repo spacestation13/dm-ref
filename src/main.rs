@@ -282,39 +282,62 @@ fn create_page_from_html(
             continue;
         };
 
-        if data_title_element.has_children() {
+        let has_bold_header = data_title_element.select(&B_SELECTOR).next().is_some();
+
+        if has_bold_header {
             if let Some(data_inner_element) = data_title_element.select(&B_SELECTOR).next() {
                 data_title_element = data_inner_element;
             }
-        }
 
-        let data_title = data_title_element.inner_html().replace(':', "");
+            let data_title = data_title_element.inner_html().replace(':', "");
 
-        if data_title.contains("When") {
-            tags.push("event".to_string());
-        }
-
-        let mut opt_array: Vec<String> = Vec::new();
-        for results in data_part.select(&DD_SELECTOR) {
-            let mut stripped = results.inner_html();
-
-            stripped = parse_html_to_markdown(
-                NAIVE_STRIPPER_REGEX.replace_all(&stripped, "").to_string(),
-                path_to_doc,
-            );
-            if stripped.is_empty() {
-                continue;
+            if data_title.contains("When") {
+                tags.push("event".to_string());
             }
 
-            opt_array.push(stripped);
+            let mut opt_array: Vec<String> = Vec::new();
+            for results in data_part.select(&DD_SELECTOR) {
+                let mut stripped = results.inner_html();
+
+                stripped = parse_html_to_markdown(
+                    NAIVE_STRIPPER_REGEX.replace_all(&stripped, "").to_string(),
+                    path_to_doc,
+                );
+                if stripped.is_empty() {
+                    continue;
+                }
+
+                opt_array.push(stripped);
+            }
+
+            let is_code_header = data_part
+                .value()
+                .has_class("codedd", scraper::CaseSensitivity::CaseSensitive)
+                || data_title == "Format";
+
+            headers.push((data_title, opt_array, is_code_header));
+        } else {
+            let dt_elements: Vec<_> = data_part.select(&DT_SELECTOR).collect();
+            let dd_elements: Vec<_> = data_part.select(&DD_SELECTOR).collect();
+
+            for (dt, dd) in dt_elements.iter().zip(dd_elements.iter()) {
+                let term = dt.inner_html().replace(':', "").trim().to_string();
+                let description = parse_html_to_markdown(
+                    NAIVE_STRIPPER_REGEX
+                        .replace_all(&dd.inner_html(), "")
+                        .to_string(),
+                    path_to_doc,
+                );
+
+                if term.contains("When") {
+                    tags.push("event".to_string());
+                }
+
+                if !description.is_empty() {
+                    headers.push((term, vec![description], false));
+                }
+            }
         }
-
-        let is_code_header = data_part
-            .value()
-            .has_class("codedd", scraper::CaseSensitivity::CaseSensitive)
-            || data_title == "Format";
-
-        headers.push((data_title, opt_array, is_code_header));
     }
 
     let mut text: Vec<String> = Vec::new();
