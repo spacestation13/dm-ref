@@ -1,0 +1,17 @@
+[package]
+name = "dm-ref-scraper"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+ego-tree = "0.10.0"
+html-escape = "0.2.13"
+html2md = "0.2.15"
+percent-encoding = "2.3.1"
+regex = "1.11.1"
+scraper = "0.23.1"
+toml_edit = "0.22.25"
+
+[dev-dependencies]
+scraper = "0.23.1"
