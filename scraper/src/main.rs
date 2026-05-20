@@ -203,6 +203,7 @@ This site is made using [Quartz](https://quartz.jzhao.xyz/) and [dm-ref-scraper]
         };
 
         let body = remove_html_encode(&page.body);
+        let body = CODE_REGEX.replace_all(&body, "`").to_string();
         let body = ORPHAN_TT_REGEX.replace_all(&body, "").to_string();
         let body = escape_percents(&body);
         let body = escape_dollars_outside_code(&body);
