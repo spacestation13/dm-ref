@@ -14,8 +14,8 @@ use toml_edit::{value, Array, Table};
 
 static PAGE_SELECTOR: LazyLock<Selector> = LazyLock::new(|| Selector::parse("a").unwrap());
 static TITLE_SELECTOR: LazyLock<Selector> = LazyLock::new(|| Selector::parse("h2").unwrap());
-static TEXT_SELECTOR: LazyLock<Selector> =
-    LazyLock::new(|| Selector::parse("p,h3,xmp,pre,ul").unwrap());
+static CONTENT_SELECTOR: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("p,h3,xmp,pre,ul,dl").unwrap());
 static DL_SELECTOR: LazyLock<Selector> = LazyLock::new(|| Selector::parse("dl").unwrap());
 static B_SELECTOR: LazyLock<Selector> = LazyLock::new(|| Selector::parse("b").unwrap());
 static DT_SELECTOR: LazyLock<Selector> = LazyLock::new(|| Selector::parse("dt").unwrap());
@@ -32,7 +32,7 @@ static LINK_BACKSLASH_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new("(`.*
 static CODE_PERCENT_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new("`(.*)(%%)(.*)`").unwrap());
 static NAIVE_STRIPPER_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new("<a name.*>.*</a>").unwrap());
+    LazyLock::new(|| Regex::new("<a name.*?>.*?</a>").unwrap());
 static CLEAN_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new("[{}]").unwrap());
 
 const TEXT_REPLACEMENTS: &[(char, &str)] = &[
@@ -250,98 +250,52 @@ fn create_page_from_html(
         page_is_object.insert(operator.as_str().to_string());
     }
 
+    // First pass: extract bold-header <dl> blocks for frontmatter and top-of-page rendering
     let mut headers: Vec<(String, Vec<String>, bool)> = Vec::new();
-    let mut codedt_blocks: Vec<String> = Vec::new();
+    let mut bold_dl_ids: HashSet<ego_tree::NodeId> = HashSet::new();
     for data_part in document.select(&DL_SELECTOR) {
-        if data_part
-            .value()
-            .has_class("codedt", scraper::CaseSensitivity::CaseSensitive)
-        {
-            let mut definition_list = String::new();
-            let dt_elements: Vec<_> = data_part.select(&DT_SELECTOR).collect();
-            let dd_elements: Vec<_> = data_part.select(&DD_SELECTOR).collect();
-
-            for (dt, dd) in dt_elements.iter().zip(dd_elements.iter()) {
-                let term = parse_html_to_markdown(dt.inner_html(), path_to_doc);
-                let description = parse_html_to_markdown(dd.inner_html(), path_to_doc);
-                let _ = writeln!(
-                    definition_list,
-                    "- **{}**: {}",
-                    term.trim(),
-                    description.trim()
-                );
-            }
-
-            if !definition_list.is_empty() {
-                codedt_blocks.push(definition_list.trim().to_string());
-            }
-            continue;
-        }
-
-        let Some(mut data_title_element) = data_part.select(&DT_SELECTOR).next() else {
+        let Some(data_title_element) = data_part.select(&DT_SELECTOR).next() else {
             continue;
         };
 
-        let has_bold_header = data_title_element.select(&B_SELECTOR).next().is_some();
-
-        if has_bold_header {
-            if let Some(data_inner_element) = data_title_element.select(&B_SELECTOR).next() {
-                data_title_element = data_inner_element;
-            }
-
-            let data_title = data_title_element.inner_html().replace(':', "");
-
-            if data_title.contains("When") {
-                tags.push("event".to_string());
-            }
-
-            let mut opt_array: Vec<String> = Vec::new();
-            for results in data_part.select(&DD_SELECTOR) {
-                let mut stripped = results.inner_html();
-
-                stripped = parse_html_to_markdown(
-                    NAIVE_STRIPPER_REGEX.replace_all(&stripped, "").to_string(),
-                    path_to_doc,
-                );
-                if stripped.is_empty() {
-                    continue;
-                }
-
-                opt_array.push(stripped);
-            }
-
-            let is_code_header = data_part
-                .value()
-                .has_class("codedd", scraper::CaseSensitivity::CaseSensitive)
-                || data_title == "Format";
-
-            headers.push((data_title, opt_array, is_code_header));
-        } else {
-            let dt_elements: Vec<_> = data_part.select(&DT_SELECTOR).collect();
-            let dd_elements: Vec<_> = data_part.select(&DD_SELECTOR).collect();
-
-            for (dt, dd) in dt_elements.iter().zip(dd_elements.iter()) {
-                let term = dt.inner_html().replace(':', "").trim().to_string();
-                let description = parse_html_to_markdown(
-                    NAIVE_STRIPPER_REGEX
-                        .replace_all(&dd.inner_html(), "")
-                        .to_string(),
-                    path_to_doc,
-                );
-
-                if term.contains("When") {
-                    tags.push("event".to_string());
-                }
-
-                if !description.is_empty() {
-                    headers.push((term, vec![description], false));
-                }
-            }
+        if data_title_element.select(&B_SELECTOR).next().is_none() {
+            continue;
         }
+
+        bold_dl_ids.insert(data_part.id());
+
+        let bold_element = data_title_element.select(&B_SELECTOR).next().unwrap();
+        let data_title = bold_element.inner_html().replace(':', "");
+
+        if data_title.contains("When") {
+            tags.push("event".to_string());
+        }
+
+        let mut opt_array: Vec<String> = Vec::new();
+        for results in data_part.select(&DD_SELECTOR) {
+            let mut stripped = results.inner_html();
+
+            stripped = parse_html_to_markdown(
+                NAIVE_STRIPPER_REGEX.replace_all(&stripped, "").to_string(),
+                path_to_doc,
+            );
+            if stripped.is_empty() {
+                continue;
+            }
+
+            opt_array.push(stripped);
+        }
+
+        let is_code_header = data_part
+            .value()
+            .has_class("codedd", scraper::CaseSensitivity::CaseSensitive)
+            || data_title == "Format";
+
+        headers.push((data_title, opt_array, is_code_header));
     }
 
+    // Render bold headers at top of page
     let mut text: Vec<String> = Vec::new();
-
     let mut write_after: Vec<String> = Vec::new();
     for part in &headers {
         let mut to_write = String::new();
@@ -355,7 +309,6 @@ fn create_page_from_html(
                     let split: Vec<&str> = string.split(':').collect();
                     let _ = write!(to_write, "- `{}`:{}", split[0], split[1]);
                 } else {
-                    // Even if this is a code header, if it is a link, we do not want to code-ify it
                     if part.2 && !string.starts_with('[') {
                         let _ = write!(to_write, "- `{}`", string);
                     } else {
@@ -380,28 +333,95 @@ fn create_page_from_html(
         }
     }
 
-    for block in codedt_blocks {
-        text.push(block);
-    }
+    // Second pass: all content elements in document order
+    for element in document.select(&CONTENT_SELECTOR) {
+        // Skip elements nested inside a <dl> (they're handled when we process that <dl>)
+        if is_nested_in_dl(&element) {
+            continue;
+        }
 
-    for text_part in document.select(&TEXT_SELECTOR) {
-        match text_part.value().name() {
+        match element.value().name() {
+            "dl" => {
+                if bold_dl_ids.contains(&element.id()) {
+                    continue;
+                }
+
+                if element
+                    .value()
+                    .has_class("codedt", scraper::CaseSensitivity::CaseSensitive)
+                {
+                    let mut definition_list = String::new();
+                    let dt_elements: Vec<_> = element.select(&DT_SELECTOR).collect();
+                    let dd_elements: Vec<_> = element.select(&DD_SELECTOR).collect();
+
+                    for (dt, dd) in dt_elements.iter().zip(dd_elements.iter()) {
+                        let term = parse_html_to_markdown(dt.inner_html(), path_to_doc);
+                        let description = parse_html_to_markdown(dd.inner_html(), path_to_doc);
+                        let _ = writeln!(
+                            definition_list,
+                            "- **{}**: {}",
+                            term.trim(),
+                            description.trim()
+                        );
+                    }
+
+                    if !definition_list.is_empty() {
+                        text.push(definition_list.trim().to_string());
+                    }
+                } else {
+                    let dt_elements: Vec<_> = element.select(&DT_SELECTOR).collect();
+                    let dd_elements: Vec<_> = element.select(&DD_SELECTOR).collect();
+
+                    let mut definition_list = String::new();
+                    for (dt, dd) in dt_elements.iter().zip(dd_elements.iter()) {
+                        let term = parse_html_to_markdown(
+                            dt.inner_html().replace(':', ""),
+                            path_to_doc,
+                        )
+                        .trim()
+                        .to_string();
+                        let description = parse_html_to_markdown(
+                            NAIVE_STRIPPER_REGEX
+                                .replace_all(&dd.inner_html(), "")
+                                .to_string(),
+                            path_to_doc,
+                        );
+
+                        if term.contains("When") {
+                            tags.push("event".to_string());
+                        }
+
+                        if !description.is_empty() {
+                            let _ = writeln!(
+                                definition_list,
+                                "- **{}**: {}",
+                                term,
+                                description.trim()
+                            );
+                        }
+                    }
+
+                    if !definition_list.is_empty() {
+                        text.push(definition_list.trim().to_string());
+                    }
+                }
+            }
             "p" => {
-                if text_part
+                if element
                     .value()
                     .has_class("note", scraper::CaseSensitivity::CaseSensitive)
-                    || text_part.inner_html().starts_with("Note:")
+                    || element.inner_html().starts_with("Note:")
                 {
                     let mut note_type = "note";
 
-                    if text_part
+                    if element
                         .value()
                         .has_class("deprecated", scraper::CaseSensitivity::CaseSensitive)
                     {
                         note_type = "deprecated";
                     };
 
-                    if text_part
+                    if element
                         .value()
                         .has_class("security", scraper::CaseSensitivity::CaseSensitive)
                     {
@@ -412,22 +432,22 @@ fn create_page_from_html(
                         "> [!{}]\n> {}",
                         note_type,
                         parse_html_to_markdown(
-                            text_part.inner_html().replace("Note:", ""),
+                            element.inner_html().replace("Note:", ""),
                             path_to_doc
                         )
                     ));
                 } else {
-                    text.push(parse_html_to_markdown(text_part.inner_html(), path_to_doc));
+                    text.push(parse_html_to_markdown(element.inner_html(), path_to_doc));
                 }
             }
             "h3" => {
-                if text_part.inner_html() == "Example:" {
+                if element.inner_html() == "Example:" {
                     continue;
                 }
 
                 text.push(format!(
                     "## {}",
-                    parse_html_to_markdown(text_part.inner_html(), path_to_doc)
+                    parse_html_to_markdown(element.inner_html(), path_to_doc)
                 ));
             }
             "xmp" => {
@@ -435,25 +455,25 @@ fn create_page_from_html(
                     text.push(format!(
                         "```dream-maker /{}/\n{}\n```",
                         target,
-                        text_part.inner_html().trim()
+                        element.inner_html().trim()
                     ));
                 } else {
                     text.push(format!(
                         "```dream-maker\n{}\n```",
-                        text_part.inner_html().trim()
+                        element.inner_html().trim()
                     ));
                 }
             }
             "pre" => {
                 let has_child_elements =
-                    text_part.children().any(|child| child.value().is_element());
+                    element.children().any(|child| child.value().is_element());
                 if has_child_elements {
-                    text.push(text_part.html());
+                    text.push(element.html());
                 } else {
-                    text.push(format!("```\n{}\n```", text_part.inner_html().trim()));
+                    text.push(format!("```\n{}\n```", element.inner_html().trim()));
                 }
             }
-            "ul" => text.push(parse_html_to_markdown(text_part.html(), path_to_doc)),
+            "ul" => text.push(parse_html_to_markdown(element.html(), path_to_doc)),
             _ => (),
         }
     }
@@ -491,6 +511,20 @@ fn create_page_from_html(
             metadata: parsed_metadata,
         },
     );
+}
+
+fn is_nested_in_dl(element: &scraper::ElementRef) -> bool {
+    let mut node = element.parent();
+    while let Some(parent) = node {
+        if let Some(elem) = parent.value().as_element() {
+            let name = elem.name.local.as_ref();
+            if name == "dl" || name == "dd" || name == "dt" {
+                return true;
+            }
+        }
+        node = parent.parent();
+    }
+    false
 }
 
 fn parse_html_to_markdown(html: String, all_pages: &HashMap<String, Html>) -> String {

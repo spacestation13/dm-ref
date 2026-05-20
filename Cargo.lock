@@ -192,6 +192,7 @@ name = "dm-ref-scraper"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "ego-tree",
  "html-escape",
  "html2md",
  "percent-encoding",
