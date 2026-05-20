@@ -32,6 +32,8 @@ static CODE_PERCENT_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new("`(.*)(%%)(.*)`").unwrap());
 static NAIVE_STRIPPER_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new("<a name.*?>.*?</a>").unwrap());
+static SCRIPT_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?s)<script[\s>].*?</script>").unwrap());
 static CLEAN_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new("[{}]").unwrap());
 
 const TEXT_REPLACEMENTS: &[(char, &str)] = &[
@@ -56,7 +58,7 @@ const TEXT_REPLACEMENTS: &[(char, &str)] = &[
 ];
 
 const BLOCK_ELEMENTS: &[&str] = &[
-    "dl", "p", "h3", "xmp", "pre", "ul", "table", "div", "hr", "ol",
+    "dl", "p", "h3", "xmp", "pre", "ul", "table", "div", "hr", "ol", "script",
 ];
 
 #[derive(Parser)]
@@ -505,7 +507,14 @@ fn render_block_element(
         "xmp" => render_xmp(element, target_name, text),
         "pre" => render_pre(element, path_to_doc, text),
         "ul" => text.push(parse_html_to_markdown(element.html(), path_to_doc)),
-        "div" | "table" | "ol" => text.push(element.html()),
+        "div" | "table" | "ol" => {
+            let html = element
+                .html()
+                .replace("class=\"sidebar", "class=\"dm-sidebar")
+                .replace("class=sidebar", "class=\"dm-sidebar\"");
+            text.push(html);
+        }
+        "script" => (),
         _ => (),
     }
 }
@@ -596,8 +605,10 @@ fn render_p(
     text: &mut Vec<String>,
 ) {
     let elem = element.value();
+    let inner = SCRIPT_REGEX.replace_all(&element.inner_html(), "").to_string();
+
     if elem.has_class("note", scraper::CaseSensitivity::CaseSensitive)
-        || element.inner_html().starts_with("Note:")
+        || inner.starts_with("Note:")
     {
         let mut note_type = "note";
         if elem.has_class("deprecated", scraper::CaseSensitivity::CaseSensitive) {
@@ -610,10 +621,10 @@ fn render_p(
         text.push(format!(
             "> [!{}]\n> {}",
             note_type,
-            parse_html_to_markdown(element.inner_html().replace("Note:", ""), path_to_doc)
+            parse_html_to_markdown(inner.replace("Note:", ""), path_to_doc)
         ));
     } else {
-        text.push(parse_html_to_markdown(element.inner_html(), path_to_doc));
+        text.push(parse_html_to_markdown(inner, path_to_doc));
     }
 }
 
