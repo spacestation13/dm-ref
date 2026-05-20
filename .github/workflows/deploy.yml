@@ -5,8 +5,6 @@ on:
     branches:
       - main
   workflow_dispatch:
-  repository_dispatch:
-    types: [trigger-workflow]
   schedule:
     - cron: '0 0 * * *'
 
@@ -43,15 +41,10 @@ jobs:
             BYOND_VERSION=$(strings byond/bin/byondcore.dll | grep -oE 'Version [0-9]{3}\.[0-9]{4}' | sed 's/Version //')
             sed -i "s/%BYOND VERSION%/$BYOND_VERSION/" quartz.config.ts
 
-      - uses: actions/checkout@v6
-        with:
-            repository: hry-gh/dm-ref-scraper
-            path: dm-ref-scraper
-
       - name: Run Scraping Tool
         run: |
-            cd dm-ref-scraper
-            cargo run -- --ref $GITHUB_WORKSPACE/byond/help/ref/info.html --output $GITHUB_WORKSPACE/content
+            cd scraper
+            cargo run --release -- --ref $GITHUB_WORKSPACE/byond/help/ref/info.html --output $GITHUB_WORKSPACE/content
 
       - name: Prepare assets
         run: |
