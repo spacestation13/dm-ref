@@ -696,13 +696,20 @@ fn render_pre_with_links(pre: &scraper::ElementRef, all_pages: &HashMap<String, 
                     if let Some(dest) = elem.attr("href") {
                         let final_destination = dest.replace('#', "");
                         let link_text = el.inner_html();
-                        if all_pages.contains_key(&final_destination)
-                            || final_destination.contains("http")
-                        {
+                        if final_destination.contains("http") {
                             let _ = write!(
                                 result,
                                 "<a href=\"{}\">{}</a>",
                                 make_ref_web_safe(&final_destination),
+                                link_text
+                            );
+                        } else if let Some(resolved) =
+                            resolve_link(&final_destination, all_pages)
+                        {
+                            let _ = write!(
+                                result,
+                                "<a href=\"{}\">{}</a>",
+                                make_ref_web_safe(&resolved),
                                 link_text
                             );
                         } else {
@@ -782,6 +789,24 @@ fn flush_html_acc(acc: &mut String, parts: &mut Vec<String>, all_pages: &HashMap
 
 // --- HTML to Markdown conversion ---
 
+fn resolve_link(dest: &str, all_pages: &HashMap<String, Html>) -> Option<String> {
+    if all_pages.contains_key(dest) {
+        return Some(dest.to_string());
+    }
+
+    if let Ok(decoded) = percent_encoding::percent_decode_str(dest).decode_utf8() {
+        if all_pages.contains_key(decoded.as_ref()) {
+            return Some(decoded.into_owned());
+        }
+    }
+
+    let lower = dest.to_lowercase();
+    all_pages
+        .keys()
+        .find(|k| k.to_lowercase() == lower)
+        .cloned()
+}
+
 fn parse_html_to_markdown(html: String, all_pages: &HashMap<String, Html>) -> String {
     let mut html = html.replace('\n', " ");
     html = CODE_REGEX.replace_all(&html, "`".to_string()).to_string();
@@ -792,22 +817,33 @@ fn parse_html_to_markdown(html: String, all_pages: &HashMap<String, Html>) -> St
         if let Some(dest) = link.attr("href") {
             let final_destination = dest.replace('#', "");
 
-            if !all_pages.contains_key(&final_destination) && !final_destination.contains("http") {
+            if final_destination.contains("http") {
                 html = html.replace(
                     &link.html(),
-                    &format!("**BROKEN LINK: {}**", make_ref_web_safe(&final_destination)),
+                    &format!(
+                        "[{}]({})",
+                        link.inner_html(),
+                        make_ref_web_safe(&final_destination),
+                    ),
                 );
                 continue;
             }
 
-            html = html.replace(
-                &link.html(),
-                &format!(
-                    "[{}]({})",
-                    link.inner_html(),
-                    make_ref_web_safe(&final_destination),
-                ),
-            );
+            if let Some(resolved) = resolve_link(&final_destination, all_pages) {
+                html = html.replace(
+                    &link.html(),
+                    &format!(
+                        "[{}]({})",
+                        link.inner_html(),
+                        make_ref_web_safe(&resolved),
+                    ),
+                );
+            } else {
+                html = html.replace(
+                    &link.html(),
+                    &format!("**BROKEN LINK: {}**", make_ref_web_safe(&final_destination)),
+                );
+            }
         }
     }
 
