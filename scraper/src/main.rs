@@ -179,9 +179,9 @@ fn main() {
         "/".to_string(),
         Page {
             title: "Reference".to_string(),
-            body: "# dm-ref-scraper and Quartz
+            body: "# dm-ref and Quartz
 
-This site is made using [Quartz](https://quartz.jzhao.xyz/) and [dm-ref-scraper](https://github.com/spacestation13/dm-ref-scraper). You probably want to start [here](/DM)!
+This site is made using [Quartz](https://quartz.jzhao.xyz/) and [dm-ref](https://github.com/spacestation13/dm-ref). You probably want to start [here](/DM)!
     "
             .to_string(),
             version: None,
