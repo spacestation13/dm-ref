@@ -1,0 +1,11 @@
+services:
+  dm-ref-bot:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      - DISCORD_PUBLIC_KEY=${DISCORD_PUBLIC_KEY}
+      - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
+      - DISCORD_APPLICATION_ID=${DISCORD_APPLICATION_ID}
+      - PORT=8080
+    restart: unless-stopped

@@ -1,0 +1,6 @@
+bot/target/
+scraper/target/
+node_modules/
+public/
+content/
+.git/

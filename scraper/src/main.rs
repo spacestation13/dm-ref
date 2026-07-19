@@ -507,12 +507,11 @@ fn render_block_element(
         "xmp" => render_xmp(element, target_name, text),
         "pre" => render_pre(element, path_to_doc, text),
         "ul" => text.push(parse_html_to_markdown(element.html(), path_to_doc)),
-        "div" | "table" | "ol" => {
-            let html = element
-                .html()
-                .replace("class=\"sidebar", "class=\"dm-sidebar")
-                .replace("class=sidebar", "class=\"dm-sidebar\"");
-            text.push(html);
+        "div" | "ol" => {
+            text.push(parse_html_to_markdown(element.inner_html(), path_to_doc));
+        }
+        "table" => {
+            text.push(element.html());
         }
         "script" => (),
         _ => (),
