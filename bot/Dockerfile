@@ -13,6 +13,14 @@ COPY scraper/src ./src
 RUN touch src/main.rs && cargo build --release
 RUN ./target/release/dm-ref-scraper --ref /tmp/byond/help/ref/info.html --output /usr/src/content
 
+FROM rust:latest AS disasm
+
+RUN rustup target add i686-unknown-linux-gnu && apt-get update && apt-get install -y gcc-multilib g++-multilib && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /usr/src/dm-disasm
+COPY dm-playground/crates/dm-disasm/ ./
+RUN cargo build --release --target i686-unknown-linux-gnu
+
 FROM node:22 AS frontend-deps
 
 RUN npm install -g pnpm@11
@@ -24,6 +32,7 @@ RUN pnpm install --frozen-lockfile
 FROM frontend-deps AS frontend
 
 COPY dm-playground/ ./
+COPY --from=disasm /usr/src/dm-disasm/target/i686-unknown-linux-gnu/release/libdm_disasm.so public/lib/libdm_disasm.so
 ARG VITE_DISCORD_CLIENT_ID
 ARG VITE_BOT_BACKEND_URL=""
 RUN pnpm build
