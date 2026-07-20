@@ -50,6 +50,21 @@ resource "google_secret_manager_secret_version" "discord_bot_token" {
   secret_data = var.discord_bot_token
 }
 
+resource "google_secret_manager_secret" "discord_client_secret" {
+  secret_id = "discord-client-secret"
+
+  replication {
+    auto {}
+  }
+
+  depends_on = [google_project_service.secretmanager]
+}
+
+resource "google_secret_manager_secret_version" "discord_client_secret" {
+  secret      = google_secret_manager_secret.discord_client_secret.id
+  secret_data = var.discord_client_secret
+}
+
 resource "google_service_account" "bot" {
   account_id   = "dm-ref-bot"
   display_name = "DM Ref Bot"
@@ -95,6 +110,16 @@ resource "google_cloud_run_v2_service" "bot" {
         }
       }
 
+      env {
+        name = "DISCORD_CLIENT_SECRET"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.discord_client_secret.secret_id
+            version = "latest"
+          }
+        }
+      }
+
       resources {
         limits = {
           cpu    = "1"
@@ -109,6 +134,12 @@ resource "google_cloud_run_v2_service" "bot" {
 
 resource "google_secret_manager_secret_iam_member" "bot_secret_access" {
   secret_id = google_secret_manager_secret.discord_bot_token.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.bot.email}"
+}
+
+resource "google_secret_manager_secret_iam_member" "bot_client_secret_access" {
+  secret_id = google_secret_manager_secret.discord_client_secret.secret_id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.bot.email}"
 }

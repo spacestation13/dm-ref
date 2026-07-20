@@ -46,6 +46,9 @@ jobs:
             cd scraper
             cargo run --release -- --ref $GITHUB_WORKSPACE/byond/help/ref/info.html --output $GITHUB_WORKSPACE/content
 
+      - name: Copy static pages
+        run: cp static/*.md $GITHUB_WORKSPACE/content/
+
       - name: Prepare assets
         run: |
             wget https://raw.githubusercontent.com/adrienverge/copr-some-nice-fonts/590400b0e1426d7b10bdda48ab565d3d2b144f5e/Verdana.ttf -O quartz/redistless/Verdana.ttf

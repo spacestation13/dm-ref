@@ -19,3 +19,8 @@ variable "discord_bot_token" {
 variable "discord_application_id" {
   type = string
 }
+
+variable "discord_client_secret" {
+  type      = string
+  sensitive = true
+}

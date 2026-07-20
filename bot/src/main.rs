@@ -36,6 +36,10 @@ struct AppState {
     reader: IndexReader,
     index: Index,
     default_fields: Vec<Field>,
+    bot_token: String,
+    client_id: String,
+    client_secret: String,
+    http_client: reqwest::Client,
 }
 
 #[derive(Deserialize)]
@@ -49,6 +53,8 @@ struct Interaction {
 struct InteractionData {
     #[allow(dead_code)]
     name: Option<String>,
+    #[serde(rename = "type", default)]
+    command_type: Option<u8>,
     options: Option<Vec<CommandOption>>,
     custom_id: Option<String>,
     #[allow(dead_code)]
@@ -78,6 +84,161 @@ struct FormattedPage {
 struct SeeAlsoLink {
     label: String,
     path: String,
+}
+
+#[derive(Deserialize)]
+struct ShareRequest {
+    code: String,
+    output: String,
+    share_hash: String,
+    channel_id: String,
+    access_token: String,
+}
+
+#[derive(Deserialize)]
+struct TokenExchangeRequest {
+    code: String,
+}
+
+async fn handle_token_exchange(
+    State(state): State<Arc<AppState>>,
+    axum::Json(req): axum::Json<TokenExchangeRequest>,
+) -> impl IntoResponse {
+    let params = [
+        ("client_id", state.client_id.as_str()),
+        ("client_secret", state.client_secret.as_str()),
+        ("grant_type", "authorization_code"),
+        ("code", &req.code),
+    ];
+
+    let resp = state
+        .http_client
+        .post("https://discord.com/api/v10/oauth2/token")
+        .form(&params)
+        .send()
+        .await;
+
+    let resp = match resp {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!("token exchange request failed: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "token exchange failed").into_response();
+        }
+    };
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        tracing::error!("token exchange error {}: {}", status, body);
+        return (StatusCode::BAD_REQUEST, "token exchange failed").into_response();
+    }
+
+    let body: serde_json::Value = match resp.json().await {
+        Ok(v) => v,
+        Err(_) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, "invalid token response").into_response()
+        }
+    };
+
+    axum::Json(body).into_response()
+}
+
+#[derive(Deserialize)]
+struct DiscordUser {
+    username: String,
+}
+
+async fn handle_share(
+    State(state): State<Arc<AppState>>,
+    axum::Json(req): axum::Json<ShareRequest>,
+) -> impl IntoResponse {
+    // Validate the access token by fetching the user's identity
+    let user_resp = state
+        .http_client
+        .get("https://discord.com/api/v10/users/@me")
+        .header("Authorization", format!("Bearer {}", req.access_token))
+        .send()
+        .await;
+
+    let user_resp = match user_resp {
+        Ok(r) => r,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to validate token",
+            )
+                .into_response()
+        }
+    };
+
+    if user_resp.status() != reqwest::StatusCode::OK {
+        return (StatusCode::UNAUTHORIZED, "invalid access token").into_response();
+    }
+
+    let user: DiscordUser = match user_resp.json().await {
+        Ok(u) => u,
+        Err(_) => return (StatusCode::UNAUTHORIZED, "invalid user response").into_response(),
+    };
+
+    // Build embed fields, omitting empty code/output
+    let mut fields = Vec::new();
+
+    if !req.code.is_empty() {
+        let code = truncate(&req.code, 1000);
+        fields.push(json!({
+            "name": "Code",
+            "value": format!("```js\n{}\n```", code)
+        }));
+    }
+
+    if !req.output.is_empty() {
+        let output = truncate(&req.output, 1000);
+        fields.push(json!({
+            "name": "Output",
+            "value": format!("```\n{}\n```", output)
+        }));
+    }
+
+    let activity_url = format!(
+        "https://discord.com/activities/{}?custom_id={}",
+        state.client_id, req.share_hash
+    );
+
+    let message = json!({
+        "content": format!("[Edit this code]({})", activity_url),
+        "embeds": [{
+            "title": "DM Playground",
+            "color": EMBED_COLOR,
+            "fields": fields,
+            "footer": {
+                "text": format!("Shared by {} via DM Playground", user.username)
+            }
+        }]
+    });
+
+    // Post message to the specified channel
+    let post_resp = state
+        .http_client
+        .post(format!(
+            "https://discord.com/api/v10/channels/{}/messages",
+            req.channel_id
+        ))
+        .header("Authorization", format!("Bot {}", state.bot_token))
+        .json(&message)
+        .send()
+        .await;
+
+    match post_resp {
+        Ok(r) if r.status().is_success() => (StatusCode::OK, "message sent").into_response(),
+        Ok(r) => {
+            tracing::error!("discord API error: {}", r.status());
+            (StatusCode::INTERNAL_SERVER_ERROR, "failed to post message").into_response()
+        }
+        Err(e) => {
+            tracing::error!("discord API request failed: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "failed to post message").into_response()
+        }
+    }
 }
 
 async fn handle_interaction(
@@ -128,6 +289,24 @@ async fn handle_interaction(
 }
 
 fn handle_command(interaction: &Interaction, state: &AppState) -> serde_json::Value {
+    let command_name = interaction.data.as_ref().and_then(|d| d.name.as_deref());
+    let command_type = interaction.data.as_ref().and_then(|d| d.command_type);
+
+    if command_type == Some(4) {
+        return json!({"type": 12});
+    }
+
+    if command_name == Some("play") {
+        let activity_url = format!("https://discord.com/activities/{}", state.client_id);
+        return json!({
+            "type": 4,
+            "data": {
+                "content": activity_url,
+                "flags": 64
+            }
+        });
+    }
+
     let search_for = interaction
         .data
         .as_ref()
@@ -347,20 +526,37 @@ fn build_components_json(
 async fn register_commands(bot_token: &str, app_id: &str) {
     let client = reqwest::Client::new();
     let url = format!("https://discord.com/api/v10/applications/{app_id}/commands");
-    let commands = json!([{
-        "name": "dmref",
-        "description": "Get an entry from the DM Reference",
-        "type": 1,
-        "integration_types": [0, 1],
-        "contexts": [0, 1, 2],
-        "options": [{
-            "name": "search_for",
-            "description": "The ref entry to look for",
-            "type": 3,
-            "required": true,
-            "autocomplete": true
-        }]
-    }]);
+    let commands = json!([
+        {
+            "name": "dmref",
+            "description": "Get an entry from the DM Reference",
+            "type": 1,
+            "integration_types": [0, 1],
+            "contexts": [0, 1, 2],
+            "options": [{
+                "name": "search_for",
+                "description": "The ref entry to look for",
+                "type": 3,
+                "required": true,
+                "autocomplete": true
+            }]
+        },
+        {
+            "name": "playground",
+            "description": "Launch the DM Playground",
+            "type": 4,
+            "handler": 1,
+            "integration_types": [0, 1],
+            "contexts": [0, 1, 2]
+        },
+        {
+            "name": "play",
+            "description": "Open the DM Playground",
+            "type": 1,
+            "integration_types": [0, 1],
+            "contexts": [0, 1, 2]
+        }
+    ]);
     let resp = client
         .put(&url)
         .header("Authorization", format!("Bot {bot_token}"))
@@ -547,7 +743,9 @@ fn format_page(page: &str, data: &AppState) -> Option<FormattedPage> {
 
     let fields_len: usize = fields.iter().map(|(k, v)| k.len() + v.len()).sum();
     let overhead = title.len() + footer.len() + fields_len;
-    let body_budget = MAX_EMBED_TOTAL.saturating_sub(overhead).min(MAX_DESCRIPTION);
+    let body_budget = MAX_EMBED_TOTAL
+        .saturating_sub(overhead)
+        .min(MAX_DESCRIPTION);
 
     let pages = split_at_paragraphs(&formatted_body, body_budget);
 
@@ -575,10 +773,7 @@ fn format_body(body: &str) -> String {
         let original = capture.get(0).unwrap().as_str();
         let display = capture.get(1).unwrap().as_str();
         let path = capture.get(2).unwrap().as_str();
-        new_result = new_result.replace(
-            original,
-            &format!("[{}]({}/{})", display, BASE_URL, path),
-        );
+        new_result = new_result.replace(original, &format!("[{}]({}/{})", display, BASE_URL, path));
     }
     result = new_result;
 
@@ -656,7 +851,11 @@ async fn main() {
     let public_key_hex = std::env::var("DISCORD_PUBLIC_KEY").expect("missing DISCORD_PUBLIC_KEY");
     let bot_token = std::env::var("DISCORD_BOT_TOKEN").expect("missing DISCORD_BOT_TOKEN");
     let app_id = std::env::var("DISCORD_APPLICATION_ID").expect("missing DISCORD_APPLICATION_ID");
+    let client_secret =
+        std::env::var("DISCORD_CLIENT_SECRET").expect("missing DISCORD_CLIENT_SECRET");
     let port = std::env::var("PORT").unwrap_or_else(|_| "8080".to_string());
+    let static_dir = std::env::var("STATIC_DIR")
+        .unwrap_or_else(|_| "/usr/local/share/dm-playground".to_string());
 
     let public_key_bytes = hex::decode(&public_key_hex).expect("invalid public key hex");
     let public_key = VerifyingKey::from_bytes(
@@ -681,8 +880,7 @@ async fn main() {
     let mut index_writer: IndexWriter = index.writer(15_000_000).unwrap();
 
     let titles =
-        generate_titles_to_page(&records, &mut path_to_parsed, &schema, &mut index_writer)
-            .unwrap();
+        generate_titles_to_page(&records, &mut path_to_parsed, &schema, &mut index_writer).unwrap();
 
     let reader = index
         .reader_builder()
@@ -706,10 +904,21 @@ async fn main() {
         reader,
         index,
         default_fields,
+        bot_token,
+        client_id: app_id.clone(),
+        client_secret,
+        http_client: reqwest::Client::new(),
     });
 
+    let serve_dir = tower_http::services::ServeDir::new(&static_dir).fallback(
+        tower_http::services::ServeFile::new(format!("{}/index.html", static_dir)),
+    );
+
     let app = Router::new()
-        .route("/", post(handle_interaction))
+        .route("/interactions", post(handle_interaction))
+        .route("/share", post(handle_share))
+        .route("/api/discord/token", post(handle_token_exchange))
+        .fallback_service(serve_dir)
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}"))
