@@ -61,9 +61,20 @@ struct Interaction {
     interaction_type: u8,
     data: Option<InteractionData>,
     guild_id: Option<String>,
+    channel_id: Option<String>,
     member: Option<InteractionMember>,
     user: Option<InteractionUser>,
     app_permissions: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ResolvedMessage {
+    content: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ResolvedData {
+    messages: Option<HashMap<String, ResolvedMessage>>,
 }
 
 #[derive(Deserialize)]
@@ -74,6 +85,8 @@ struct InteractionData {
     command_type: Option<u8>,
     options: Option<Vec<CommandOption>>,
     custom_id: Option<String>,
+    target_id: Option<String>,
+    resolved: Option<ResolvedData>,
     #[allow(dead_code)]
     component_type: Option<u8>,
     values: Option<Vec<String>>,
@@ -295,7 +308,6 @@ async fn handle_share(
     );
 
     let message = json!({
-        "content": format!("[Edit this code]({})", activity_url),
         "embeds": [{
             "title": "DM Playground",
             "color": EMBED_COLOR,
@@ -303,6 +315,15 @@ async fn handle_share(
             "footer": {
                 "text": format!("Shared by {} via DM Playground", user.username)
             }
+        }],
+        "components": [{
+            "type": 1,
+            "components": [{
+                "type": 2,
+                "style": 5,
+                "label": "Edit this code",
+                "url": activity_url
+            }]
         }]
     });
 
@@ -369,7 +390,7 @@ async fn handle_interaction(
 
     let response = match interaction.interaction_type {
         1 => json!({"type": 1}),
-        2 => handle_command(&interaction, &state),
+        2 => handle_command(&interaction, &state).await,
         3 => handle_component(&interaction, &state),
         4 => handle_autocomplete(&interaction, &state),
         _ => json!({"type": 1}),
@@ -388,12 +409,183 @@ fn get_user_id(interaction: &Interaction) -> &str {
         .unwrap_or("0")
 }
 
-fn handle_command(interaction: &Interaction, state: &AppState) -> serde_json::Value {
+fn extract_code_block(content: &str) -> Option<String> {
+    if let Some(start) = content.find("```") {
+        let after_fence = &content[start + 3..];
+        let code_start = after_fence.find('\n').map(|i| i + 1).unwrap_or(0);
+        let code_area = &after_fence[code_start..];
+        if let Some(end) = code_area.find("```") {
+            let code = code_area[..end].trim().to_string();
+            return Some(wrap_in_main_if_needed(&code));
+        }
+    }
+    None
+}
+
+fn wrap_in_main_if_needed(code: &str) -> String {
+    let has_definition = code.lines().any(|line| {
+        let trimmed = line.trim();
+        trimmed.starts_with("/proc/")
+            || trimmed.starts_with("/verb/")
+            || trimmed.starts_with("proc/")
+            || trimmed.starts_with("verb/")
+            || trimmed.ends_with(")")
+                && (trimmed.contains("/proc/") || trimmed.contains("/verb/"))
+    });
+
+    if has_definition {
+        return code.to_string();
+    }
+
+    let indented: String = code
+        .lines()
+        .map(|line| format!("\t{}", line))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("/proc/main()\n{}", indented)
+}
+
+async fn handle_command(interaction: &Interaction, state: &AppState) -> serde_json::Value {
     let command_name = interaction.data.as_ref().and_then(|d| d.name.as_deref());
     let command_type = interaction.data.as_ref().and_then(|d| d.command_type);
 
     if command_type == Some(4) {
         return json!({"type": 12});
+    }
+
+    if command_name == Some("Open in Playground") {
+        let channel_id = interaction.channel_id.clone();
+        let target_id = interaction.data.as_ref().and_then(|d| d.target_id.clone());
+        let code = interaction
+            .data
+            .as_ref()
+            .and_then(|d| {
+                let target_id = d.target_id.as_deref()?;
+                let messages = d.resolved.as_ref()?.messages.as_ref()?;
+                let msg = messages.get(target_id)?;
+                extract_code_block(msg.content.as_deref()?)
+            });
+
+        let Some(code) = code else {
+            return json!({
+                "type": 4,
+                "data": {
+                    "content": "No code block found in that message.",
+                    "flags": 64
+                }
+            });
+        };
+
+        let compressed = {
+            use base64::Engine;
+            use flate2::write::ZlibEncoder;
+            use flate2::Compression;
+            use std::io::Write;
+
+            let json = serde_json::to_string(&code).unwrap();
+            let mut encoder = ZlibEncoder::new(Vec::new(), Compression::new(4));
+            encoder.write_all(json.as_bytes()).unwrap();
+            let compressed = encoder.finish().unwrap();
+            format!("1:{}", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&compressed))
+        };
+
+        let short_id = {
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+            let mut hasher = DefaultHasher::new();
+            compressed.hash(&mut hasher);
+            format!("{:x}", hasher.finish())
+        };
+        let short_id = short_id[..8.min(short_id.len())].to_string();
+
+        let snippet = Snippet {
+            hash: compressed,
+            expires_at: chrono::Utc::now() + chrono::Duration::days(SNIPPET_TTL_DAYS),
+        };
+
+        if state
+            .firestore
+            .fluent()
+            .update()
+            .in_col(SNIPPETS_COLLECTION)
+            .document_id(&short_id)
+            .object(&snippet)
+            .execute::<Snippet>()
+            .await
+            .is_err()
+        {
+            return json!({
+                "type": 4,
+                "data": {
+                    "content": "Failed to create snippet.",
+                    "flags": 64
+                }
+            });
+        }
+
+        let activity_url = format!(
+            "https://discord.com/activities/{}?custom_id={}",
+            state.client_id, short_id
+        );
+
+        let code_display = truncate(&code, 1000);
+        let embed = json!({
+            "title": "DM Playground",
+            "color": EMBED_COLOR,
+            "fields": [{
+                "name": "Code",
+                "value": format!("```js\n{}\n```", code_display)
+            }]
+        });
+        let components = json!([{
+            "type": 1,
+            "components": [{
+                "type": 2,
+                "style": 5,
+                "label": "Open in Playground",
+                "url": activity_url
+            }]
+        }]);
+
+        let mut replied = false;
+        if let (Some(ch_id), Some(msg_id)) = (channel_id, target_id) {
+            let reply_msg = json!({
+                "embeds": [embed],
+                "components": components,
+                "message_reference": {
+                    "message_id": msg_id
+                }
+            });
+
+            if let Ok(resp) = state
+                .http_client
+                .post(format!("https://discord.com/api/v10/channels/{}/messages", ch_id))
+                .header("Authorization", format!("Bot {}", state.bot_token))
+                .json(&reply_msg)
+                .send()
+                .await
+            {
+                replied = resp.status().is_success();
+            }
+        }
+
+        if replied {
+            return json!({
+                "type": 4,
+                "data": {
+                    "content": "Opened in Playground!",
+                    "flags": 64
+                }
+            });
+        }
+
+        return json!({
+            "type": 4,
+            "data": {
+                "embeds": [embed],
+                "components": components
+            }
+        });
     }
 
     if command_name == Some("play") {
@@ -700,6 +892,12 @@ async fn register_commands(bot_token: &str, app_id: &str) {
             "name": "play",
             "description": "Open the DM Playground",
             "type": 1,
+            "integration_types": [0, 1],
+            "contexts": [0, 1, 2]
+        },
+        {
+            "name": "Open in Playground",
+            "type": 3,
             "integration_types": [0, 1],
             "contexts": [0, 1, 2]
         }

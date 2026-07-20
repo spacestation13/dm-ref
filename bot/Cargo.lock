@@ -534,9 +534,11 @@ name = "dm-ref-bot"
 version = "0.1.0"
 dependencies = [
  "axum 0.8.9",
+ "base64",
  "chrono",
  "ed25519-dalek",
  "firestore",
+ "flate2",
  "hex",
  "log",
  "regex",
