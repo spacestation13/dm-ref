@@ -27,6 +27,19 @@ resource "google_project_service" "secretmanager" {
   disable_on_destroy = false
 }
 
+resource "google_project_service" "firestore" {
+  service            = "firestore.googleapis.com"
+  disable_on_destroy = false
+}
+
+resource "google_firestore_database" "default" {
+  name        = "(default)"
+  location_id = var.region
+  type        = "FIRESTORE_NATIVE"
+
+  depends_on = [google_project_service.firestore]
+}
+
 resource "google_artifact_registry_repository" "bot" {
   repository_id = "dm-ref-bot"
   format        = "DOCKER"
@@ -142,6 +155,12 @@ resource "google_secret_manager_secret_iam_member" "bot_client_secret_access" {
   secret_id = google_secret_manager_secret.discord_client_secret.secret_id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.bot.email}"
+}
+
+resource "google_project_iam_member" "bot_firestore_access" {
+  project = var.project_id
+  role    = "roles/datastore.user"
+  member  = "serviceAccount:${google_service_account.bot.email}"
 }
 
 resource "google_cloud_run_v2_service_iam_member" "public_access" {

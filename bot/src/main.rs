@@ -4,7 +4,8 @@ use std::sync::Arc;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
-use axum::routing::post;
+use axum::extract::Path;
+use axum::routing::{get, post};
 use axum::Router;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use regex::Regex;
@@ -40,6 +41,18 @@ struct AppState {
     client_id: String,
     client_secret: String,
     http_client: reqwest::Client,
+    firestore: firestore::FirestoreDb,
+}
+
+#[derive(Deserialize)]
+struct InteractionUser {
+    id: String,
+}
+
+#[derive(Deserialize)]
+struct InteractionMember {
+    permissions: Option<String>,
+    user: Option<InteractionUser>,
 }
 
 #[derive(Deserialize)]
@@ -47,6 +60,10 @@ struct Interaction {
     #[serde(rename = "type")]
     interaction_type: u8,
     data: Option<InteractionData>,
+    guild_id: Option<String>,
+    member: Option<InteractionMember>,
+    user: Option<InteractionUser>,
+    app_permissions: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -90,7 +107,7 @@ struct SeeAlsoLink {
 struct ShareRequest {
     code: String,
     output: String,
-    share_hash: String,
+    snippet_id: String,
     channel_id: String,
     access_token: String,
 }
@@ -141,6 +158,79 @@ async fn handle_token_exchange(
     };
 
     axum::Json(body).into_response()
+}
+
+#[derive(serde::Serialize, Deserialize)]
+struct SnippetRequest {
+    hash: String,
+}
+
+#[derive(serde::Serialize, Deserialize)]
+struct Snippet {
+    hash: String,
+    expires_at: chrono::DateTime<chrono::Utc>,
+}
+
+const SNIPPETS_COLLECTION: &str = "snippets";
+const SNIPPET_TTL_DAYS: i64 = 7;
+
+async fn handle_snippet_create(
+    State(state): State<Arc<AppState>>,
+    axum::Json(req): axum::Json<SnippetRequest>,
+) -> impl IntoResponse {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = DefaultHasher::new();
+    req.hash.hash(&mut hasher);
+    let id = format!("{:x}", hasher.finish());
+    let short_id = id[..8.min(id.len())].to_string();
+
+    let snippet = Snippet {
+        hash: req.hash,
+        expires_at: chrono::Utc::now() + chrono::Duration::days(SNIPPET_TTL_DAYS),
+    };
+
+    let result = state
+        .firestore
+        .fluent()
+        .update()
+        .in_col(SNIPPETS_COLLECTION)
+        .document_id(&short_id)
+        .object(&snippet)
+        .execute::<Snippet>()
+        .await;
+
+    match result {
+        Ok(_) => axum::Json(json!({"id": short_id})).into_response(),
+        Err(e) => {
+            tracing::error!("firestore insert failed: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "failed to create snippet").into_response()
+        }
+    }
+}
+
+async fn handle_snippet_get(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let result: Result<Option<Snippet>, _> = state
+        .firestore
+        .fluent()
+        .select()
+        .by_id_in(SNIPPETS_COLLECTION)
+        .obj()
+        .one(&id)
+        .await;
+
+    match result {
+        Ok(Some(snippet)) => axum::Json(json!({"hash": snippet.hash})).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, "snippet not found").into_response(),
+        Err(e) => {
+            tracing::error!("firestore read failed: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "failed to read snippet").into_response()
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -201,7 +291,7 @@ async fn handle_share(
 
     let activity_url = format!(
         "https://discord.com/activities/{}?custom_id={}",
-        state.client_id, req.share_hash
+        state.client_id, req.snippet_id
     );
 
     let message = json!({
@@ -288,6 +378,16 @@ async fn handle_interaction(
     axum::Json(response).into_response()
 }
 
+fn get_user_id(interaction: &Interaction) -> &str {
+    interaction
+        .member
+        .as_ref()
+        .and_then(|m| m.user.as_ref())
+        .or(interaction.user.as_ref())
+        .map(|u| u.id.as_str())
+        .unwrap_or("0")
+}
+
 fn handle_command(interaction: &Interaction, state: &AppState) -> serde_json::Value {
     let command_name = interaction.data.as_ref().and_then(|d| d.name.as_deref());
     let command_type = interaction.data.as_ref().and_then(|d| d.command_type);
@@ -297,11 +397,43 @@ fn handle_command(interaction: &Interaction, state: &AppState) -> serde_json::Va
     }
 
     if command_name == Some("play") {
-        let activity_url = format!("https://discord.com/activities/{}", state.client_id);
+        let is_dm = interaction.guild_id.is_none();
+
+        let parse_perms = |perms: Option<&str>| -> u64 {
+            perms
+                .and_then(|p| p.parse::<u64>().ok())
+                .unwrap_or(0)
+        };
+
+        let member_bits = parse_perms(interaction.member.as_ref().and_then(|m| m.permissions.as_deref()));
+        let app_bits = parse_perms(interaction.app_permissions.as_deref());
+
+        let embedded_activities = 1u64 << 39;
+        let external_apps = 1u64 << 50;
+
+        let guild_installed = app_bits & embedded_activities != 0;
+        let user_can_external = member_bits & external_apps != 0;
+        let can_launch = is_dm || guild_installed || user_can_external;
+
+
+        if can_launch {
+            return json!({"type": 12});
+        }
+
+        let app_link = format!("https://discord.com/discovery/applications/{}", state.client_id);
         return json!({
             "type": 4,
             "data": {
-                "content": activity_url,
+                "content": "Activities aren't enabled in this channel. Open the app profile and click **Launch in DM**.",
+                "components": [{
+                    "type": 1,
+                    "components": [{
+                        "type": 2,
+                        "style": 5,
+                        "label": "Open DM Playground",
+                        "url": app_link
+                    }]
+                }],
                 "flags": 64
             }
         });
@@ -328,8 +460,9 @@ fn handle_command(interaction: &Interaction, state: &AppState) -> serde_json::Va
         });
     };
 
+    let user_id = get_user_id(interaction);
     let embed = build_embed_json(&formatted, 0);
-    let components = build_components_json(&formatted, 0, state);
+    let components = build_components_json(&formatted, 0, user_id, state);
 
     let mut data = json!({"embeds": [embed]});
     if !components.is_empty() {
@@ -346,8 +479,22 @@ fn handle_component(interaction: &Interaction, state: &AppState) -> serde_json::
     };
 
     let custom_id = data.custom_id.as_deref().unwrap_or_default();
+    let clicking_user = get_user_id(interaction);
 
-    let (path, page_idx) = if custom_id == "s" {
+    // Extract owner_id from custom_id (format: "action:user_id:..." or "s:user_id")
+    let parts: Vec<&str> = custom_id.splitn(4, ':').collect();
+    let owner_id = parts.get(1).unwrap_or(&"");
+    if !owner_id.is_empty() && *owner_id != clicking_user {
+        return json!({
+            "type": 4,
+            "data": {
+                "content": "Only the person who used this command can interact with it.",
+                "flags": 64
+            }
+        });
+    }
+
+    let (path, page_idx) = if custom_id.starts_with("s:") {
         let selected = data
             .values
             .as_ref()
@@ -359,13 +506,12 @@ fn handle_component(interaction: &Interaction, state: &AppState) -> serde_json::
             None => return json!({"type": 7, "data": {}}),
         }
     } else if custom_id.starts_with("p:") || custom_id.starts_with("n:") {
-        let parts: Vec<&str> = custom_id.splitn(3, ':').collect();
-        if parts.len() < 3 {
+        if parts.len() < 4 {
             return json!({"type": 7, "data": {}});
         }
         let direction = parts[0];
-        let path = parts[1];
-        let idx: usize = parts[2].parse().unwrap_or(0);
+        let path = parts[2];
+        let idx: usize = parts[3].parse().unwrap_or(0);
         let new_idx = if direction == "p" {
             idx.saturating_sub(1)
         } else {
@@ -382,7 +528,7 @@ fn handle_component(interaction: &Interaction, state: &AppState) -> serde_json::
 
     let page_idx = page_idx.min(formatted.pages.len().saturating_sub(1));
     let embed = build_embed_json(&formatted, page_idx);
-    let components = build_components_json(&formatted, page_idx, state);
+    let components = build_components_json(&formatted, page_idx, clicking_user, state);
 
     let mut resp_data = json!({"embeds": [embed]});
     if !components.is_empty() {
@@ -470,13 +616,14 @@ fn build_embed_json(page: &FormattedPage, page_idx: usize) -> serde_json::Value 
 fn build_components_json(
     page: &FormattedPage,
     page_idx: usize,
+    user_id: &str,
     data: &AppState,
 ) -> Vec<serde_json::Value> {
     let mut rows = Vec::new();
 
     if page.pages.len() > 1 {
-        let prev_id = format!("p:{}:{}", page.path, page_idx);
-        let next_id = format!("n:{}:{}", page.path, page_idx);
+        let prev_id = format!("p:{}:{}:{}", user_id, page.path, page_idx);
+        let next_id = format!("n:{}:{}:{}", user_id, page.path, page_idx);
 
         rows.push(json!({
             "type": 1,
@@ -512,7 +659,7 @@ fn build_components_json(
                 "type": 1,
                 "components": [{
                     "type": 3,
-                    "custom_id": "s",
+                    "custom_id": format!("s:{}", user_id),
                     "placeholder": "See also...",
                     "options": options
                 }]
@@ -896,6 +1043,11 @@ async fn main() {
 
     register_commands(&bot_token, &app_id).await;
 
+    let gcp_project = std::env::var("GCP_PROJECT_ID").unwrap_or_else(|_| "refdmlang".to_string());
+    let firestore = firestore::FirestoreDb::new(&gcp_project)
+        .await
+        .expect("failed to initialize firestore");
+
     let state = Arc::new(AppState {
         public_key,
         titles_to_path: titles,
@@ -908,6 +1060,7 @@ async fn main() {
         client_id: app_id.clone(),
         client_secret,
         http_client: reqwest::Client::new(),
+        firestore,
     });
 
     let serve_dir = tower_http::services::ServeDir::new(&static_dir).fallback(
@@ -918,6 +1071,8 @@ async fn main() {
         .route("/interactions", post(handle_interaction))
         .route("/share", post(handle_share))
         .route("/api/discord/token", post(handle_token_exchange))
+        .route("/api/snippets", post(handle_snippet_create))
+        .route("/api/snippets/{id}", get(handle_snippet_get))
         .fallback_service(serve_dir)
         .with_state(state);
 
