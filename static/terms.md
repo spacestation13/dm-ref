@@ -2,7 +2,7 @@
 title = "Terms of Service"
 +++
 
-**Effective date:** July 19, 2026
+**Effective date:** July 20, 2026
 
 By using the DM Reference bot or DM Playground Activity ("the Service"), you agree to the following terms.
 
@@ -30,4 +30,4 @@ These terms may be updated at any time. Continued use of the Service constitutes
 
 ## Contact
 
-For questions, open an issue at [github.com/hry-gh/dm-ref](https://github.com/hry-gh/dm-ref).
+For questions, open an issue at [github.com/spacestation13/dm-ref](https://github.com/spacestation13/dm-ref).
