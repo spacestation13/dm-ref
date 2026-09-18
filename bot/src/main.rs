@@ -19,6 +19,7 @@ use tantivy::{
     Document, Index, IndexReader, IndexWriter, TantivyDocument,
 };
 use tempfile::TempDir;
+use tower_http::cors::CorsLayer;
 
 mod content {
     include!(concat!(env!("OUT_DIR"), "/content.rs"));
@@ -1273,6 +1274,7 @@ async fn main() {
         .route("/api/discord/token", post(handle_token_exchange))
         .route("/api/snippets", post(handle_snippet_create))
         .route("/api/snippets/{id}", get(handle_snippet_get))
+        .layer(CorsLayer::permissive())
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}"))
