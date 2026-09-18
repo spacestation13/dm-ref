@@ -46,7 +46,7 @@ jobs:
           cargo run --release -- --ref $GITHUB_WORKSPACE/byond/help/ref/info.html --output $GITHUB_WORKSPACE/content
 
       - name: Copy static pages
-        run: cp static/*.md $GITHUB_WORKSPACE/content/
+        run: cp -r static/. $GITHUB_WORKSPACE/content/
 
       - name: Prepare assets
         run: |
