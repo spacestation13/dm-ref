@@ -38,8 +38,8 @@ static CLEAN_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new("[{}]").unwrap
 
 const TEXT_REPLACEMENTS: &[(char, &str)] = &[
     ('.', "dot"),
-    ('<', "greater"),
-    ('>', "less"),
+    ('<', "less"),
+    ('>', "greater"),
     ('%', "modulo"),
     ('?', "query"),
     ('&', "amp"),
