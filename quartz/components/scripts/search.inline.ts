@@ -198,8 +198,9 @@ async function setupSearch(searchElement: Element, currentSlug: FullSlug, data: 
     if (sidebar) sidebar.style.zIndex = "1"
     container.classList.add("active")
     searchBar.focus()
-    /* dm-ref EDIT */
+    /* dm-ref EDIT: start loading snippets and the typo word list before the first keystroke */
     void loadSearchText()
+    void loadWords()
   }
 
   let currentHover: HTMLInputElement | null = null
