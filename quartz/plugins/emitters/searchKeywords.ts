@@ -74,4 +74,11 @@ export const searchKeywords: Record<string, string[]> = {
   "proc/dotdot": ["super"],
   "proc/for/list": ["foreach", "for each"],
   "var/global": ["static", "global variable"],
+
+  // The "o" procs
+  "proc/orange": ["range"],
+  "proc/oview": ["view"],
+  "proc/oviewers": ["viewers"],
+  "proc/ohearers": ["hearers"],
+  "proc/obounds": ["bounds"],
 }
