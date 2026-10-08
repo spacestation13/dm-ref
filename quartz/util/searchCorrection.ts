@@ -62,7 +62,7 @@ export function correctWord(
     }
   }
   return candidates
-    .sort((left, right) => left.order - right.order)
+    .sort((left, right) => left.order - right.order || (left.word < right.word ? -1 : 1)) // Ties break alphabetically
     .slice(0, MAX_CORRECTIONS)
     .map(({ word, weight }) => ({ word, weight }))
 }

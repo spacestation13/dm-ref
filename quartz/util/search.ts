@@ -99,6 +99,6 @@ export async function searchPages(
     slug,
     rank: score * matched ** 2 * (1 + named) ** 2,
   }))
-    .sort((left, right) => right.rank - left.rank)
+    .sort((left, right) => right.rank - left.rank || (left.slug < right.slug ? -1 : 1)) // Ties break by slug
     .map(({ slug }) => slug)
 }
