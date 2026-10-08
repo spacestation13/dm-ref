@@ -7,6 +7,9 @@ import { QuartzEmitterPlugin } from "../types"
 import { toHtml } from "hast-util-to-html"
 import { write } from "./helpers"
 import { i18n } from "../../i18n"
+/* dm-ref EDIT */
+import { searchKeywords } from "./searchKeywords"
+import { SearchPostings, SearchWords, searchShard } from "../../util/search"
 
 export type ContentIndexMap = Map<FullSlug, ContentDetails>
 export type ContentDetails = {
@@ -15,7 +18,8 @@ export type ContentDetails = {
   title: string
   links: SimpleSlug[]
   tags: string[]
-  content: string
+  /* dm-ref EDIT: page text is only kept during the build; the site gets it from searchText.json */
+  content?: string
   richContent?: string
   date?: Date
   description?: string
@@ -92,30 +96,58 @@ function generateRSSFeed(cfg: GlobalConfiguration, idx: ContentIndexMap, limit?:
   </rss>`
 }
 
-function searchTokens(content: ContentDetails): string[] {
-  return Array.from(
-    new Set(`${content.slug} ${content.title} ${content.content}`.toLowerCase().match(/[a-z0-9_]+/g) ?? []),
-  )
-}
+/* dm-ref EDIT: search scoring, used by the site search bar and the MCP worker */
+const searchWords = (text: string) => text.toLowerCase().match(/[a-z0-9_]+/g) ?? []
 
-function searchShard(token: string): string {
-  let hash = 0
-  for (const character of token) {
-    hash = (Math.imul(hash, 31) + character.charCodeAt(0)) >>> 0
+// How well each word matches a page. Words in the page's title, keywords or path count far more
+// than words in the text, and count double if they're in both the path and the title.
+// `json_encode` also counts as `json` and `encode`. Text matches use BM25 for length normalization.
+const NAME_SCORE = 1000
+function tokenScores(page: ContentDetails, averageLength: number): Map<string, number> {
+  const words = searchWords(page.content ?? "")
+  const counts = new Map<string, number>()
+  for (const word of words) {
+    counts.set(word, (counts.get(word) ?? 0) + 1)
   }
-  return String(hash % 256).padStart(3, "0")
+  const lengthFactor = 1.2 * (0.5 + (0.5 * words.length) / averageLength)
+  const scores = new Map<string, number>()
+  for (const [word, count] of counts) {
+    scores.set(word, (count * 2.2) / (count + lengthFactor))
+  }
+  const keywords = searchKeywords[page.slug] ?? []
+  for (const name of [page.slug, [page.title, ...keywords].join(" ")]) {
+    for (const word of new Set(searchWords(name).flatMap((word) => [word, ...word.split("_")]))) {
+      scores.set(word, (scores.get(word) ?? 0) + NAME_SCORE)
+    }
+  }
+  return scores
 }
 
-function createMcpSearchIndex(index: ContentIndexMap): Map<string, Map<string, string[]>> {
-  const searchIndex = new Map<string, Map<string, string[]>>()
+/* dm-ref EDIT: search index, split into shards by searchShard */
+function createSearchIndex(index: ContentIndexMap): Map<string, Map<string, SearchPostings>> {
+  let totalLength = 0
+  for (const page of index.values()) {
+    totalLength += searchWords(page.content ?? "").length
+  }
+  const postings = new Map<string, { slug: string; score: number }[]>()
   for (const [slug, page] of index) {
-    for (const token of searchTokens(page)) {
-      const tokens = searchIndex.get(searchShard(token)) ?? new Map<string, string[]>()
-      const pages = tokens.get(token) ?? []
-      pages.push(slug)
-      tokens.set(token, pages)
-      searchIndex.set(searchShard(token), tokens)
+    for (const [token, score] of tokenScores(page, totalLength / index.size)) {
+      const pages = postings.get(token) ?? []
+      pages.push({ slug, score })
+      postings.set(token, pages)
     }
+  }
+
+  const searchIndex = new Map<string, Map<string, SearchPostings>>()
+  for (const [token, pages] of postings) {
+    pages.sort((left, right) => right.score - left.score)
+    const shard = searchShard(token)
+    const tokens = searchIndex.get(shard) ?? new Map()
+    tokens.set(token, {
+      named: pages.filter((page) => page.score >= NAME_SCORE).length,
+      pages: pages.map((page) => page.slug),
+    })
+    searchIndex.set(shard, tokens)
   }
   return searchIndex
 }
@@ -137,7 +169,8 @@ export const ContentIndex: QuartzEmitterPlugin<Partial<Options>> = (opts) => {
             title: file.data.frontmatter?.title!,
             links: file.data.links ?? [],
             tags: file.data.frontmatter?.tags ?? [],
-            content: file.data.text ?? "",
+            /* dm-ref EDIT: drop embedded base64 images (`data:` URIs) so they aren't indexed as words */
+            content: (file.data.text ?? "").replace(/data:[^\s)]*/g, ""),
             richContent: opts?.rssFullHtml
               ? escapeHTML(toHtml(tree as Root, { allowDangerousHtml: true }))
               : undefined,
@@ -165,6 +198,16 @@ export const ContentIndex: QuartzEmitterPlugin<Partial<Options>> = (opts) => {
         })
       }
 
+      /* dm-ref EDIT: page text goes to its own file so the explorer and graph don't wait on it */
+      yield write({
+        ctx,
+        content: JSON.stringify(
+          Object.fromEntries(Array.from(linkIndex, ([slug, page]) => [slug, page.content])),
+        ),
+        slug: joinSegments("static", "searchText") as FullSlug,
+        ext: ".json",
+      })
+
       const fp = joinSegments("static", "contentIndex") as FullSlug
       const simplifiedIndex = Object.fromEntries(
         Array.from(linkIndex).map(([slug, content]) => {
@@ -173,7 +216,8 @@ export const ContentIndex: QuartzEmitterPlugin<Partial<Options>> = (opts) => {
           // for the RSS feed
           delete content.description
           delete content.date
-          return [slug, content]
+          /* dm-ref EDIT: page text lives in searchText.json */
+          return [slug, { ...content, content: undefined }]
         }),
       )
 
@@ -184,14 +228,37 @@ export const ContentIndex: QuartzEmitterPlugin<Partial<Options>> = (opts) => {
         ext: ".json",
       })
 
-      for (const [shard, tokens] of createMcpSearchIndex(linkIndex)) {
+      /* dm-ref EDIT: search shards, and the word list used to correct typos */
+      const words: SearchWords = {}
+      for (const [shard, tokens] of createSearchIndex(linkIndex)) {
+        for (const [token, { pages }] of tokens) {
+          words[token] = pages.length
+        }
         yield write({
           ctx,
           content: JSON.stringify(Object.fromEntries(tokens)),
-          slug: joinSegments("static", "mcp", "search", shard) as FullSlug,
+          slug: joinSegments("static", "search", shard) as FullSlug,
           ext: ".json",
         })
       }
+      yield write({
+        ctx,
+        content: JSON.stringify(words),
+        slug: joinSegments("static", "search", "words") as FullSlug,
+        ext: ".json",
+      })
+
+      /* dm-ref EDIT: titles let MCP results tell apart pages like proc/del and datum/proc/Del */
+      yield write({
+        ctx,
+        content: JSON.stringify(
+          Object.fromEntries(
+            Array.from(linkIndex, ([slug, page]) => [slug, page.title.replaceAll("\\", "")]),
+          ),
+        ),
+        slug: joinSegments("static", "mcp", "titles") as FullSlug,
+        ext: ".json",
+      })
     },
     externalResources: (ctx) => {
       if (opts?.enableRSS) {

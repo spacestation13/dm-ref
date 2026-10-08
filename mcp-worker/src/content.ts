@@ -1,3 +1,5 @@
+import { searchPages, type SearchPostings, type SearchWords } from "../../quartz/util/search"
+
 export type Env = {
   STATIC_BASE_URL: string
 }
@@ -7,51 +9,22 @@ export function canonicalUrl(slug: string): string {
 }
 
 export async function getSearchResults(env: Env, query: string): Promise<string[]> {
-  // Deduplicate terms so repeated words do not skew
-  const tokens = [...new Set(query.toLowerCase().match(/[a-z0-9_]+/g) ?? [])]
-  if (tokens.length === 0) {
-    return []
+  const loadJson = async <T>(path: string): Promise<T> => {
+    const response = await getCached(env, path)
+    return response.ok ? await response.json() as T : {} as T
   }
-
-  const matches = await Promise.all(tokens.map(async (token) => {
-    const response = await getCached(env, `mcp/search/${searchShard(token)}.json`)
-    if (response.status === 404) {
-      return []
-    }
-    const index = await response.json() as Record<string, string[]>
-    return index[token] ?? []
-  }))
-
-  // Prefer precise results, but tolerate verbose queries
-  const intersection = matches.reduce((intersection, pages) => {
-    const pageSet = new Set(pages)
-    return intersection.filter((slug) => pageSet.has(slug))
-  })
-
-  if (intersection.length > 0) {
-    return intersection
-  }
-
-  // Weight rare terms more heavily so broad terms do not dominate
-  const scores = new Map<string, number>()
-  for (const pages of matches) {
-    const tokenWeight = 1 / Math.log2(pages.length + 1)
-    for (const slug of pages) {
-      scores.set(slug, (scores.get(slug) ?? 0) + tokenWeight)
-    }
-  }
-
-  return [...scores.entries()]
-    .sort((left, right) => right[1] - left[1])
-    .map(([slug]) => slug)
+  // The word list is only fetched when a query has a word that isn't in the index
+  let words: Promise<SearchWords> | undefined
+  return searchPages(
+    query,
+    (shard) => loadJson<Record<string, SearchPostings>>(`search/${shard}.json`),
+    () => (words ??= loadJson<SearchWords>("search/words.json")),
+  )
 }
 
-function searchShard(token: string): string {
-  let hash = 0
-  for (const character of token) {
-    hash = (Math.imul(hash, 31) + character.charCodeAt(0)) >>> 0
-  }
-  return String(hash % 256).padStart(3, "0") // chosen to keep shard and count size reasonable
+export async function getTitles(env: Env): Promise<Record<string, string>> {
+  const response = await getCached(env, "mcp/titles.json")
+  return response.ok ? await response.json() as Record<string, string> : {}
 }
 
 async function getCached(env: Env, path: string): Promise<Response> {

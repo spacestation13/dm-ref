@@ -1,7 +1,13 @@
-import FlexSearch from "flexsearch"
-import { ContentDetails } from "../../plugins/emitters/contentIndex"
 import { registerEscapeHandler, removeAllChildren } from "./util"
-import { FullSlug, normalizeRelativeURLs, resolveRelative } from "../../util/path"
+import {
+  FullSlug,
+  joinSegments,
+  normalizeRelativeURLs,
+  pathToRoot,
+  resolveRelative,
+} from "../../util/path"
+/* dm-ref EDIT */
+import { SearchPostings, SearchWords, searchPages } from "../../util/search"
 
 interface Item {
   id: number
@@ -15,40 +21,14 @@ interface Item {
 type SearchType = "basic" | "tags"
 let searchType: SearchType = "basic"
 let currentSearchTerm: string = ""
-const encoder = (str: string) => str.toLowerCase().split(/([^a-z]|[^\x00-\x7F])/)
-let index = new FlexSearch.Document<Item>({
-  charset: "latin:extra",
-  encode: encoder,
-  document: {
-    id: "id",
-    tag: "tags",
-    index: [
-      {
-        field: "title",
-        tokenize: "forward",
-      },
-      {
-        field: "content",
-        tokenize: "forward",
-      },
-      {
-        field: "tags",
-        tokenize: "forward",
-      },
-      /* dm-ref EDIT */
-      {
-        field: "slug",
-        tokenize: "forward",
-      }
-    ],
-  },
-})
 
 const p = new DOMParser()
 const fetchContentCache: Map<FullSlug, Element[]> = new Map()
 const contextWindowWords = 30
 const numSearchResults = 8
 const numTagResults = 5
+/* dm-ref EDIT: search files (shards, word list, page text), each fetched once */
+const searchFiles: Map<string, Promise<unknown>> = new Map()
 
 const tokenizeTerm = (term: string) => {
   const tokens = term.split(/\s+/).filter((t) => t.trim() !== "")
@@ -164,6 +144,25 @@ async function setupSearch(searchElement: Element, currentSlug: FullSlug, data: 
   if (!searchLayout) return
 
   const idDataMap = Object.keys(data) as FullSlug[]
+  /* dm-ref EDIT: search bar uses the shared search index (quartz/util/search.ts) */
+  const idBySlug = new Map(idDataMap.map((slug, id) => [slug, id]))
+  const loadSearchFile = <T>(path: string): Promise<T> => {
+    let pending = searchFiles.get(path)
+    if (!pending) {
+      pending = fetch(joinSegments(pathToRoot(currentSlug), "static", path))
+        .then((response) => (response.ok ? response.json() : {}))
+        .catch(() => {
+          searchFiles.delete(path)
+          return {}
+        })
+      searchFiles.set(path, pending)
+    }
+    return pending as Promise<T>
+  }
+  const loadShard = (shard: string) =>
+    loadSearchFile<Record<string, SearchPostings>>(`search/${shard}.json`)
+  const loadWords = () => loadSearchFile<SearchWords>("search/words.json")
+  const loadSearchText = () => loadSearchFile<Record<string, string>>("searchText.json")
   const appendLayout = (el: HTMLElement) => {
     searchLayout.appendChild(el)
   }
@@ -199,6 +198,8 @@ async function setupSearch(searchElement: Element, currentSlug: FullSlug, data: 
     if (sidebar) sidebar.style.zIndex = "1"
     container.classList.add("active")
     searchBar.focus()
+    /* dm-ref EDIT */
+    void loadSearchText()
   }
 
   let currentHover: HTMLInputElement | null = null
@@ -268,13 +269,14 @@ async function setupSearch(searchElement: Element, currentSlug: FullSlug, data: 
     }
   }
 
-  const formatForDisplay = (term: string, id: number) => {
+  /* dm-ref EDIT: snippets come from searchText.json (`text`) */
+  const formatForDisplay = (term: string, id: number, text: Record<string, string>) => {
     const slug = idDataMap[id]
     return {
       id,
       slug,
       title: searchType === "tags" ? data[slug].title : highlight(term, data[slug].title ?? ""),
-      content: highlight(term, data[slug].content ?? "", true),
+      content: highlight(term, text[slug] ?? "", true),
       tags: highlightTags(term.substring(1), data[slug].tags),
     }
   }
@@ -397,65 +399,54 @@ async function setupSearch(searchElement: Element, currentSlug: FullSlug, data: 
   }
 
   async function onType(e: HTMLElementEventMap["input"]) {
-    if (!searchLayout || !index) return
+    if (!searchLayout) return
     currentSearchTerm = (e.target as HTMLInputElement).value
     searchLayout.classList.toggle("display-results", currentSearchTerm !== "")
     searchType = currentSearchTerm.startsWith("#") ? "tags" : "basic"
 
-    let searchResults: FlexSearch.SimpleDocumentSearchResultSetUnit[]
-    if (searchType === "tags") {
-      currentSearchTerm = currentSearchTerm.substring(1).trim()
-      const separatorIndex = currentSearchTerm.indexOf(" ")
-      if (separatorIndex != -1) {
-        // search by title and content index and then filter by tag (implemented in flexsearch)
-        const tag = currentSearchTerm.substring(0, separatorIndex)
-        const query = currentSearchTerm.substring(separatorIndex + 1).trim()
-        searchResults = await index.searchAsync({
-          query: query,
-          // return at least 10000 documents, so it is enough to filter them by tag (implemented in flexsearch)
-          limit: Math.max(numSearchResults, 10000),
-          /* dm-ref EDIT */
-          index: ["title", "content", "slug"],
-          tag: tag,
-        })
-        for (let searchResult of searchResults) {
-          searchResult.result = searchResult.result.slice(0, numSearchResults)
-        }
-        // set search type to basic and remove tag from term for proper highlightning and scroll
-        searchType = "basic"
-        currentSearchTerm = query
-      } else {
-        // default search by tags index
-        searchResults = await index.searchAsync({
-          query: currentSearchTerm,
-          limit: numSearchResults,
-          index: ["tags"],
-        })
-      }
-    } else if (searchType === "basic") {
-      searchResults = await index.searchAsync({
-        query: currentSearchTerm,
-        limit: numSearchResults,
-        /* dm-ref EDIT */
-        index: ["title", "content", "slug"],
-      })
+    /* dm-ref EDIT: plain searches and "#tag words" use the shared search (filtered by tag for the
+       latter); "#tag" alone lists pages whose tag starts with it */
+    const tagQuery = currentSearchTerm.match(/^#(\S+)\s+(\S.*)$/)
+    if (searchType === "basic" || tagQuery) {
+      const input = currentSearchTerm
+      const tag = tagQuery?.[1].toLowerCase()
+      const term = tagQuery?.[2] ?? input
+      const [slugs, text] = await Promise.all([
+        // no space after the last word means it's still being typed
+        searchPages(term, loadShard, loadWords, { lastWordUnfinished: !term.endsWith(" ") }),
+        loadSearchText(),
+      ])
+      if (input !== currentSearchTerm) return // a newer keystroke started its own search
+      // highlight and scroll to the words, not the tag
+      searchType = "basic"
+      currentSearchTerm = term
+      const ids = slugs
+        .filter(
+          (slug) =>
+            !tag || data[slug].tags.some((pageTag: string) => pageTag.toLowerCase() === tag),
+        )
+        .slice(0, numSearchResults)
+        .flatMap((slug) => idBySlug.get(slug as FullSlug) ?? [])
+      await displayResults(ids.map((id) => formatForDisplay(term, id, text)))
+      return
     }
 
-    const getByField = (field: string): number[] => {
-      const results = searchResults.filter((x) => x.field === field)
-      return results.length === 0 ? [] : ([...results[0].result] as number[])
-    }
-
-    // order titles ahead of content
-    const allIds: Set<number> = new Set([
-      ...getByField("title"),
-      ...getByField("content"),
-      ...getByField("tags"),
-      /* dm-ref EDIT */
-      ...getByField("slug"),
-    ])
-    const finalResults = [...allIds].map((id) => formatForDisplay(currentSearchTerm, id))
-    await displayResults(finalResults)
+    /* dm-ref EDIT */
+    const input = currentSearchTerm
+    const tag = currentSearchTerm.substring(1).trim().toLowerCase()
+    const text = await loadSearchText()
+    if (input !== currentSearchTerm) return
+    currentSearchTerm = tag
+    const ids = tag
+      ? idDataMap
+          .flatMap((slug, id) =>
+            data[slug].tags.some((pageTag: string) => pageTag.toLowerCase().startsWith(tag))
+              ? [id]
+              : [],
+          )
+          .slice(0, numSearchResults)
+      : []
+    await displayResults(ids.map((id) => formatForDisplay(tag, id, text)))
   }
 
   document.addEventListener("keydown", shortcutHandler)
@@ -466,33 +457,6 @@ async function setupSearch(searchElement: Element, currentSlug: FullSlug, data: 
   window.addCleanup(() => searchBar.removeEventListener("input", onType))
 
   registerEscapeHandler(container, hideSearch)
-  await fillDocument(data)
-}
-
-/**
- * Fills flexsearch document with data
- * @param index index to fill
- * @param data data to fill index with
- */
-let indexPopulated = false
-async function fillDocument(data: ContentIndex) {
-  if (indexPopulated) return
-  let id = 0
-  const promises: Array<Promise<unknown>> = []
-  for (const [slug, fileData] of Object.entries<ContentDetails>(data)) {
-    promises.push(
-      index.addAsync(id++, {
-        id,
-        slug: slug as FullSlug,
-        title: fileData.title,
-        content: fileData.content,
-        tags: fileData.tags,
-      }),
-    )
-  }
-
-  await Promise.all(promises)
-  indexPopulated = true
 }
 
 document.addEventListener("nav", async (e: CustomEventMap["nav"]) => {
