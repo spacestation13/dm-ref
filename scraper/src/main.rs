@@ -36,6 +36,9 @@ static SCRIPT_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?s)<script[\s>].*?</script>").unwrap());
 static CLEAN_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new("[{}]").unwrap());
 
+// Symbol names for page paths (e.g. `&&` -> `ampamp`). 
+// Search turns typed symbols into these names, so keep them in step with
+// SYMBOL_NAMES in quartz/util/search.ts and symbol_name in bot/src/search.rs.
 const TEXT_REPLACEMENTS: &[(char, &str)] = &[
     ('.', "dot"),
     ('<', "less"),
