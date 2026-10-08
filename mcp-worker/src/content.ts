@@ -22,9 +22,11 @@ export async function getSearchResults(env: Env, query: string): Promise<string[
   )
 }
 
-export async function getTitles(env: Env): Promise<Record<string, string>> {
-  const response = await getCached(env, "mcp/titles.json")
-  return response.ok ? await response.json() as Record<string, string> : {}
+export type PageSummary = { title: string; snippet: string }
+
+export async function getPages(env: Env): Promise<Record<string, PageSummary>> {
+  const response = await getCached(env, "mcp/pages.json")
+  return response.ok ? await response.json() as Record<string, PageSummary> : {}
 }
 
 async function getCached(env: Env, path: string): Promise<Response> {

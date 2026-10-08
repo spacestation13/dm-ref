@@ -248,15 +248,28 @@ export const ContentIndex: QuartzEmitterPlugin<Partial<Options>> = (opts) => {
         ext: ".json",
       })
 
-      /* dm-ref EDIT: titles let MCP results tell apart pages like proc/del and datum/proc/Del */
+      /* dm-ref EDIT: titles and 120-character snippets for MCP results, so agents can tell pages
+         apart (proc/del vs datum/proc/Del) and often answer without opening one */
+      const snippet = (text: string) => {
+        const flat = text
+          .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
+          .replace(/\s+/g, " ")
+          .trim()
+        if (flat.length <= 120) return flat
+        const wordEnd = flat.lastIndexOf(" ", 120)
+        return flat.slice(0, wordEnd > 72 ? wordEnd : 120) + "…"
+      }
       yield write({
         ctx,
         content: JSON.stringify(
           Object.fromEntries(
-            Array.from(linkIndex, ([slug, page]) => [slug, page.title.replaceAll("\\", "")]),
+            Array.from(linkIndex, ([slug, page]) => [
+              slug,
+              { title: page.title.replaceAll("\\", ""), snippet: snippet(page.content ?? "") },
+            ]),
           ),
         ),
-        slug: joinSegments("static", "mcp", "titles") as FullSlug,
+        slug: joinSegments("static", "mcp", "pages") as FullSlug,
         ext: ".json",
       })
     },
