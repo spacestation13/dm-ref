@@ -39,7 +39,7 @@ function editDistance(a: string, b: string, max: number): number {
 }
 
 // Indexed words close to `word`: with `typos`, within one typo (two for words over six letters);
-// with `prefixes`, words that start with it. Closer and more common words first.
+// with `prefixes`, words that start with it (from two letters). Closer and more common words first.
 export function correctWord(
   word: string,
   words: SearchWords,
@@ -50,7 +50,7 @@ export function correctWord(
   for (const [candidate, pages] of Object.entries(words)) {
     if (candidate === word) continue
     const commonness = Math.log2(pages + 1) / 10
-    if (prefixes && word.length >= 3 && candidate.startsWith(word)) {
+    if (prefixes && word.length >= 2 && candidate.startsWith(word)) {
       const order = candidate.length - word.length - commonness
       candidates.push({ word: candidate, weight: PREFIX_WEIGHT, order })
     } else if (maxEdits > 0) {
