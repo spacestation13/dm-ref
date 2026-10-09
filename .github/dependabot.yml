@@ -7,6 +7,12 @@ updates:
     groups:
       production-dependencies:
         applies-to: "version-updates"
+        dependency-type: "production"
+        patterns:
+          - "*"
+      development-dependencies:
+        applies-to: "version-updates"
+        dependency-type: "development"
         patterns:
           - "*"
   - package-ecosystem: "github-actions"
