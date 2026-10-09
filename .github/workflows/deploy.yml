@@ -19,13 +19,16 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
+    outputs:
+      bot-hash: ${{ steps.bot.outputs.hash }}
+      bot-deployed: ${{ steps.bot-deployed.outputs.cache-hit }}
     steps:
       - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v7
         with:
-          node-version: 24
+          node-version: 26
 
       - name: Install Dependencies
         run: npm ci
@@ -61,6 +64,30 @@ jobs:
         with:
           path: public
 
+      # The bot embeds the scraped pages and the search index; it only needs a deploy when they or its own files change. 
+      - name: Hash bot inputs
+        id: bot
+        run: |
+          hash=$({ git ls-files -z bot content public/static/search; find content public/static/search -type f -print0; } | sort -zu | xargs -0 sha256sum | sha256sum | cut -c1-16)
+          echo "hash=$hash" >> "$GITHUB_OUTPUT"
+
+      - name: Check if this bot hash is deployed
+        id: bot-deployed
+        uses: actions/cache/restore@v6
+        with:
+          path: bot-deployed
+          key: bot-deployed-${{ steps.bot.outputs.hash }}
+          lookup-only: true
+
+      - name: Upload bot data
+        if: steps.bot-deployed.outputs.cache-hit != 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: bot-data
+          path: |
+            content
+            public/static/search
+
   deploy:
     needs: build
     environment:
@@ -75,13 +102,13 @@ jobs:
 
   deploy-mcp:
     needs: deploy
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v7
         with:
-          node-version: 24
+          node-version: 26
           cache: npm
           cache-dependency-path: mcp-worker/package-lock.json
 
@@ -94,3 +121,44 @@ jobs:
         working-directory: mcp-worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+  deploy-bot:
+    needs: build
+    if: needs.build.outputs.bot-deployed != 'true'
+    runs-on: ubuntu-latest
+    env:
+      REGION: us-central1
+      SERVICE: dm-ref-bot
+      IMAGE: us-central1-docker.pkg.dev/refdmlang/dm-ref-bot/dm-ref-bot:${{ needs.build.outputs.bot-hash }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download bot data
+        uses: actions/download-artifact@v8
+        with:
+          name: bot-data
+          path: bot/data
+
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: projects/68509514696/locations/global/workloadIdentityPools/github/providers/github
+          service_account: github-deploy@refdmlang.iam.gserviceaccount.com
+
+      - uses: google-github-actions/setup-gcloud@v3
+
+      - name: Build and push
+        run: |
+          gcloud auth configure-docker "$REGION-docker.pkg.dev" --quiet
+          docker build -f bot/Dockerfile -t "$IMAGE" .
+          docker push "$IMAGE"
+
+      - name: Deploy to Cloud Run
+        run: gcloud run services update "$SERVICE" --region "$REGION" --image "$IMAGE"
+
+      - name: Record deployed hash
+        run: mkdir bot-deployed && echo "$IMAGE" > bot-deployed/image
+
+      - uses: actions/cache/save@v6
+        with:
+          path: bot-deployed
+          key: bot-deployed-${{ needs.build.outputs.bot-hash }}

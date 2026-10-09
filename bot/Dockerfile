@@ -1,18 +1,3 @@
-FROM rust:latest AS scraper-deps
-
-WORKDIR /usr/src/scraper
-COPY scraper/Cargo.toml scraper/Cargo.lock ./
-RUN mkdir src && echo "fn main() {}" > src/main.rs && cargo build --release && rm -rf src
-
-FROM scraper-deps AS scraper
-
-RUN apt-get update && apt-get install -y wget unzip && rm -rf /var/lib/apt/lists/*
-RUN wget https://byond-builds.dm-lang.org/516/516.latest_byond.zip -O /tmp/byond.zip && unzip /tmp/byond.zip -d /tmp && rm /tmp/byond.zip
-
-COPY scraper/src ./src
-RUN touch src/main.rs && cargo build --release
-RUN ./target/release/dm-ref-scraper --ref /tmp/byond/help/ref/info.html --output /usr/src/content
-
 FROM rust:latest AS bot-deps
 
 WORKDIR /usr/src/bot
@@ -23,8 +8,10 @@ FROM bot-deps AS builder
 
 COPY bot/src ./src
 COPY bot/build.rs ./
-COPY --from=scraper /usr/src/content /usr/src/content
-RUN touch src/main.rs && SOURCE_DIR=/usr/src/content cargo build --release
+# Scraped pages and the site's search index, placed in bot/data by .github/workflows/deploy.yml
+COPY bot/data/content /usr/src/content
+COPY bot/data/public/static/search /usr/src/search
+RUN touch src/main.rs && SOURCE_DIR=/usr/src/content SEARCH_DIR=/usr/src/search cargo build --release
 
 FROM debian:bookworm-slim
 

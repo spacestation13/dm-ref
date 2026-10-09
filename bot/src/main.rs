@@ -11,18 +11,18 @@ use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use regex::Regex;
 use serde::Deserialize;
 use serde_json::json;
-use tantivy::{
-    collector::TopDocs,
-    doc,
-    query::QueryParser,
-    schema::{Field, Schema, Value, STORED, TEXT},
-    Document, Index, IndexReader, IndexWriter, TantivyDocument,
-};
-use tempfile::TempDir;
 use tower_http::cors::CorsLayer;
+
+use search::SearchIndex;
+
+mod search;
 
 mod content {
     include!(concat!(env!("OUT_DIR"), "/content.rs"));
+}
+
+mod search_shards {
+    include!(concat!(env!("OUT_DIR"), "/search_shards.rs"));
 }
 
 const BASE_URL: &str = "https://ref.dm-lang.org";
@@ -35,9 +35,7 @@ struct AppState {
     titles_to_path: HashMap<String, &'static str>,
     path_to_parsed: HashMap<String, PageFrontmatter>,
     path_to_text: HashMap<&'static str, &'static str>,
-    reader: IndexReader,
-    index: Index,
-    default_fields: Vec<Field>,
+    search: SearchIndex,
     bot_token: String,
     client_id: String,
     client_secret: String,
@@ -740,44 +738,30 @@ fn handle_component(interaction: &Interaction, state: &AppState) -> serde_json::
 }
 
 fn handle_autocomplete(interaction: &Interaction, state: &AppState) -> serde_json::Value {
-    let partial = interaction
+    let typed = interaction
         .data
         .as_ref()
         .and_then(|d| d.options.as_ref())
         .and_then(|opts| opts.iter().find(|o| o.focused))
         .and_then(|opt| opt.value.as_str())
-        .unwrap_or_default()
-        .trim();
+        .unwrap_or_default();
 
-    if partial.is_empty() {
-        return json!({"type": 8, "data": {"choices": []}});
-    }
-
-    let searcher = state.reader.searcher();
-    let query_parser = QueryParser::for_index(&state.index, state.default_fields.clone());
-    let path_field = state.index.schema().get_field("path").unwrap();
-
-    let mut choices: Vec<serde_json::Value> = Vec::new();
-
-    if let Ok(query) = query_parser.parse_query(partial) {
-        if let Ok(results) = searcher.search(&query, &TopDocs::with_limit(25)) {
-            for (_, addr) in results {
-                let Ok(doc) = searcher.doc::<TantivyDocument>(addr) else {
-                    continue;
-                };
-                let Some(path) = doc.get_first(path_field).and_then(|v| v.as_str()) else {
-                    continue;
-                };
-                let Some(parsed) = state.path_to_parsed.get(path) else {
-                    continue;
-                };
-                let Some(title) = &parsed.title else {
-                    continue;
-                };
-                choices.push(json!({"name": title, "value": title}));
-            }
-        }
-    }
+    // No space after the last word means it's still being typed, so it also completes
+    let still_typing = !typed.ends_with(char::is_whitespace);
+    let choices: Vec<serde_json::Value> = state
+        .search
+        .search(typed, still_typing)
+        .into_iter()
+        .filter_map(|slug| {
+            state
+                .path_to_parsed
+                .get(&format!("{slug}.md"))?
+                .title
+                .as_ref()
+        })
+        .take(25)
+        .map(|title| json!({"name": title, "value": title}))
+        .collect();
 
     json!({"type": 8, "data": {"choices": choices}})
 }
@@ -970,20 +954,16 @@ fn get_page<'a>(query: &str, data: &'a AppState) -> Option<&'a str> {
         return Some(*path);
     }
 
-    let searcher = data.reader.searcher();
-    let query_parser = QueryParser::for_index(&data.index, data.default_fields.clone());
-
-    if let Ok(parsed) = query_parser.parse_query(query) {
-        if let Ok(res) = searcher.search(&parsed, &TopDocs::with_limit(1)) {
-            if let Some(doc_tuple) = res.first() {
-                let doc: TantivyDocument = searcher.doc(doc_tuple.1).unwrap();
-                for field in doc.iter_fields_and_values() {
-                    if let Some(path) = data.path_to_text.get_key_value(field.1.as_str().unwrap()) {
-                        return Some(*path.0);
-                    }
-                }
-            }
-        }
+    let best_match = data
+        .search
+        .search(query, false)
+        .into_iter()
+        .find_map(|slug| {
+            data.path_to_text
+                .get_key_value(format!("{slug}.md").as_str())
+        });
+    if let Some((path, _)) = best_match {
+        return Some(*path);
     }
 
     for key in data.path_to_text.keys() {
@@ -1219,32 +1199,9 @@ async fn main() {
 
     let records = content::get_all();
     let mut path_to_parsed = HashMap::new();
-
-    let search_index_path = TempDir::new().unwrap();
-
-    let mut schema_builder = Schema::builder();
-    schema_builder.add_text_field("title", TEXT);
-    schema_builder.add_text_field("path", TEXT | STORED);
-    schema_builder.add_text_field("body", TEXT);
-
-    let schema = schema_builder.build();
-    let index = Index::create_in_dir(&search_index_path, schema.clone()).unwrap();
-    let mut index_writer: IndexWriter = index.writer(15_000_000).unwrap();
-
-    let titles =
-        generate_titles_to_page(&records, &mut path_to_parsed, &schema, &mut index_writer).unwrap();
-
-    let reader = index
-        .reader_builder()
-        .reload_policy(tantivy::ReloadPolicy::OnCommitWithDelay)
-        .try_into()
-        .unwrap();
-
-    let default_fields = vec![
-        schema.get_field("title").unwrap(),
-        schema.get_field("path").unwrap(),
-        schema.get_field("body").unwrap(),
-    ];
+    let titles = generate_titles_to_page(&records, &mut path_to_parsed).unwrap();
+    let search = SearchIndex::from_shards(search_shards::SHARDS.iter().copied())
+        .expect("invalid embedded search index");
 
     register_commands(&bot_token, &app_id).await;
 
@@ -1258,9 +1215,7 @@ async fn main() {
         titles_to_path: titles,
         path_to_parsed,
         path_to_text: records,
-        reader,
-        index,
-        default_fields,
+        search,
         bot_token,
         client_id: app_id.clone(),
         client_secret,
@@ -1287,15 +1242,9 @@ async fn main() {
 fn generate_titles_to_page(
     records: &HashMap<&'static str, &'static str>,
     path_to_parsed: &mut HashMap<String, PageFrontmatter>,
-    schema: &Schema,
-    index_writer: &mut IndexWriter,
 ) -> Result<HashMap<String, &'static str>, Box<dyn std::error::Error>> {
     let mut title_map = HashMap::new();
     let frontmatter_regex = Regex::new(r"(?s)\+\+\+(.*)\+\+\+")?;
-
-    let title_field = schema.get_field("title").unwrap();
-    let path_field = schema.get_field("path").unwrap();
-    let body_field = schema.get_field("body").unwrap();
 
     for record in records.iter() {
         let frontmatter = match frontmatter_regex.captures(record.1) {
@@ -1313,18 +1262,9 @@ fn generate_titles_to_page(
 
         let title = parsed.title.clone().unwrap_or_default();
         let path = record.0.to_string();
-
-        index_writer.add_document(doc!(
-            title_field => title.clone(),
-            path_field => path.clone(),
-            body_field => record.1.to_string(),
-        ))?;
-
         title_map.insert(title.to_lowercase(), *record.0);
         path_to_parsed.insert(path, parsed);
     }
-
-    index_writer.commit()?;
 
     Ok(title_map)
 }
