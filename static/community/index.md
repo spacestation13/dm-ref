@@ -47,16 +47,16 @@ Callouts are blockquotes with a type annotation. The type determines the color a
 
 ### Code Blocks
 
-Fenced code blocks support syntax highlighting. Use `dream-maker` for DM code:
+Fenced code blocks support syntax highlighting. Use `dm` for DM code:
 
 ````markdown
-```dream-maker
+```dm
 /proc/hello()
     world << "Hello, world!"
 ```
 ````
 
-```dream-maker
+```dm
 /proc/hello()
     world << "Hello, world!"
 ```

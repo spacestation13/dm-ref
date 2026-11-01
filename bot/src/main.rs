@@ -1111,7 +1111,7 @@ fn format_body(body: &str) -> String {
     }
     result = new_result;
 
-    let code_fence_regex = Regex::new(r"```dream-maker[^\n]*").unwrap();
+    let code_fence_regex = Regex::new(r"```dm\b[^\n]*").unwrap();
     result = code_fence_regex.replace_all(&result, "```js").to_string();
 
     let table_regex =

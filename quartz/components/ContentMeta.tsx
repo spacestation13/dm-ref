@@ -31,7 +31,7 @@ export default ((opts?: Partial<ContentMetaOptions>) => {
 
       /* dm-ref EDIT */
       if (fileData.frontmatter?.byond_version) {
-        segments.push(<span>Version {fileData.frontmatter.byond_version}</span>)
+        segments.push(<span>Added in BYOND {fileData.frontmatter.byond_version}</span>)
       }
 
       if (fileData.dates) {
@@ -46,6 +46,9 @@ export default ((opts?: Partial<ContentMetaOptions>) => {
         })
         segments.push(<span>{displayedTime}</span>)
       }
+
+      /* dm-ref EDIT: no empty meta line on pages without a version */
+      if (segments.length === 0) return null
 
       return (
         <p show-comma={options.showComma} class={classNames(displayClass, "content-meta")}>

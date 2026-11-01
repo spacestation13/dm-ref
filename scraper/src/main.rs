@@ -651,13 +651,13 @@ fn render_xmp(
 ) {
     if let Some(target) = target_name {
         text.push(format!(
-            "```dream-maker /{}/\n{}\n```",
+            "```dm /{}/\n{}\n```",
             target,
             element.inner_html().trim()
         ));
     } else {
         text.push(format!(
-            "```dream-maker\n{}\n```",
+            "```dm\n{}\n```",
             element.inner_html().trim()
         ));
     }
@@ -751,9 +751,9 @@ fn render_dd_content(
                     let el = scraper::ElementRef::wrap(child).unwrap();
                     let code = el.inner_html();
                     if let Some(target) = target_name {
-                        parts.push(format!("```dream-maker /{}/\n{}\n```", target, code.trim()));
+                        parts.push(format!("```dm /{}/\n{}\n```", target, code.trim()));
                     } else {
-                        parts.push(format!("```dream-maker\n{}\n```", code.trim()));
+                        parts.push(format!("```dm\n{}\n```", code.trim()));
                     }
                 } else if name == "p" {
                     flush_html_acc(&mut html_acc, &mut parts, all_pages);
