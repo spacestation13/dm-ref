@@ -150,7 +150,11 @@ async function setupSearch(searchElement: Element, currentSlug: FullSlug, data: 
     let pending = searchFiles.get(path)
     if (!pending) {
       pending = fetch(joinSegments(pathToRoot(currentSlug), "static", path))
-        .then((response) => (response.ok ? response.json() : {}))
+        .then((response) => {
+          if (!response.ok) throw new Error(`${response.status} ${path}`)
+          return response.json()
+        })
+        // don't keep a failure (say, mid-deploy), so the next keystroke tries again
         .catch(() => {
           searchFiles.delete(path)
           return {}
