@@ -451,7 +451,6 @@ fn render_body_content(
                 render_block_element(
                     name,
                     &element,
-                    child,
                     bold_dl_ids,
                     target_name,
                     path_to_doc,
@@ -496,7 +495,6 @@ fn flush_inline(acc: &mut String, text: &mut Vec<String>, all_pages: &HashMap<St
 fn render_block_element(
     name: &str,
     element: &scraper::ElementRef,
-    node: &ego_tree::NodeRef<scraper::Node>,
     bold_dl_ids: &HashSet<ego_tree::NodeId>,
     target_name: &Option<String>,
     path_to_doc: &HashMap<String, Html>,
@@ -504,7 +502,7 @@ fn render_block_element(
     text: &mut Vec<String>,
 ) {
     match name {
-        "dl" => render_dl(element, node, bold_dl_ids, target_name, path_to_doc, tags, text),
+        "dl" => render_dl(element, bold_dl_ids, target_name, path_to_doc, tags, text),
         "p" => render_p(element, path_to_doc, text),
         "h3" => render_h3(element, path_to_doc, text),
         "xmp" => render_xmp(element, target_name, text),
@@ -523,14 +521,13 @@ fn render_block_element(
 
 fn render_dl(
     element: &scraper::ElementRef,
-    node: &ego_tree::NodeRef<scraper::Node>,
     bold_dl_ids: &HashSet<ego_tree::NodeId>,
     target_name: &Option<String>,
     path_to_doc: &HashMap<String, Html>,
     tags: &mut Vec<String>,
     text: &mut Vec<String>,
 ) {
-    if bold_dl_ids.contains(&node.id()) {
+    if bold_dl_ids.contains(&element.id()) {
         return;
     }
 
