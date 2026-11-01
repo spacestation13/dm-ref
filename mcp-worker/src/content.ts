@@ -4,8 +4,9 @@ export type Env = {
   STATIC_BASE_URL: string
 }
 
-export function canonicalUrl(slug: string): string {
-  return `https://ref.dm-lang.org/${slug.replace(/\/index$/, "")}`
+// The markdown version of the page
+export function pageMarkdownUrl(slug: string): string {
+  return `https://ref.dm-lang.org/${slug}.md`
 }
 
 export async function getSearchResults(env: Env, query: string): Promise<string[]> {

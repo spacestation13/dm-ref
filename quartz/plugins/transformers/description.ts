@@ -1,7 +1,5 @@
 import { Root as HTMLRoot } from "hast"
-import { toString } from "hast-util-to-string"
 import { QuartzTransformerPlugin } from "../types"
-import { escapeHTML } from "../../util/escape"
 
 export interface Options {
   descriptionLength: number
@@ -45,17 +43,32 @@ export const Description: QuartzTransformerPlugin<Partial<Options>> = (userOpts)
               return
             }
 
-            // otherwise, use the text content
-            let desc = text
-
-            if(file.data.frontmatter?.headers) {
-              for(const header of Object.keys(file.data.frontmatter?.headers)) {
-                desc = desc.replace(header, "")
-
-                for(const part of file.data.frontmatter.headers[header]) {
-                  desc = desc.replace(part.replaceAll(/[>#`-]/g, ""), "")
-                }
+            /* dm-ref EDIT: describe the page by its prose, with link labels rather than paths and
+               without the See also list. Signature-only pages fall back to Format + Returns. */
+            const clean = (markdown: string) =>
+              markdown
+                .replaceAll("\\_", "_")
+                .replaceAll(/!\[[^\]]*\]\([^)]*\)/g, "")
+                .replaceAll(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+                .replaceAll(/^\s*(?:#+|>|-)\s?/gm, "")
+                .replaceAll(/`|\*\*/g, "")
+            const headers: Record<string, string[]> = file.data.frontmatter?.headers ?? {}
+            let desc = clean(
+              (file.value as string).replace(/\+\+\+.*?\+\+\+/s, "").replace(/^#+ See also$[\s\S]*/m, ""),
+            )
+            for (const [header, parts] of Object.entries(headers)) {
+              desc = desc.replace(header, "")
+              for (const part of parts) {
+                desc = desc.replace(clean(part), "")
               }
+            }
+            if (!desc.trim()) {
+              const format = headers.Format?.map(clean).join(" or ")
+              const returns = headers.Returns?.map(clean).join(" ")
+              desc = [format, returns].filter(Boolean).join(": ")
+            }
+            if (opts.replaceExternalLinks) {
+              desc = desc.replace(urlRegex, "$<domain>" + "$<path>")
             }
 
             const sentences = desc.replace(/\s+/g, " ").split(/\.\s/)

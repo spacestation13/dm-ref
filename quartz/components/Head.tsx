@@ -79,6 +79,10 @@ export default (() => {
             <meta property="twitter:domain" content={cfg.baseUrl}></meta>
             <meta property="og:url" content={socialUrl}></meta>
             <meta property="twitter:url" content={socialUrl}></meta>
+            {/* dm-ref EDIT: markdown version, from the MarkdownVersion emitter */}
+            {fileData.filePath && (
+              <link rel="alternate" type="text/markdown" href={`${socialUrl}.md`} />
+            )}
           </>
         )}
 

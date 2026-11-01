@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/server"
 import { z } from "zod"
-import { canonicalUrl, getPages, getSearchResults, type Env } from "./content"
+import { getPages, getSearchResults, pageMarkdownUrl, type Env } from "./content"
 
 export function createServer(env: Env): McpServer {
   const server = new McpServer({ name: "dm-reference", version: "1.0.0" })
@@ -16,7 +16,7 @@ export function createServer(env: Env): McpServer {
       const matches = slugs.slice(0, 10).map((slug) => ({
         title: pages[slug]?.title,
         path: `/${slug}`,
-        url: canonicalUrl(slug),
+        url: pageMarkdownUrl(slug),
         snippet: pages[slug]?.snippet,
       }))
 
